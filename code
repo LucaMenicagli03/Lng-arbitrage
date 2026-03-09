@@ -2,83 +2,293 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   LineChart, Line, AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  ReferenceLine, Cell, ComposedChart
+  ReferenceLine, Cell, ComposedChart,
 } from "recharts";
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   DESIGN TOKENS — Industrial Terminal Aesthetic
-   Ispirazione: Bloomberg Terminal + sala controllo raffineria
-   Font: JetBrains Mono (numeri) + Barlow Condensed (label)
-═══════════════════════════════════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════════
+   DESIGN TOKENS v5.0 — Semantic Color System
+   CYAN    → market data, live feeds (neutral info)
+   GREEN   → profit, positive P&L, optimal signals
+   AMBER   → OPEX costs, moderate warnings, thresholds
+   RED     → loss, VaR, high risk, stress events
+   PURPLE  → stochastic engine, forward model, scenarios
+════════════════════════════════════════════════════════════════════════ */
 const T = {
-  bg0:      "#060810",
-  bg1:      "#0B0F1C",
-  bg2:      "#0F1525",
-  bg3:      "#141B2E",
-  line:     "#1C2540",
-  line2:    "#243060",
-  cyan:     "#00E5FF",
-  cyanDim:  "#0097A7",
-  green:    "#00FF9D",
-  greenDim: "#00C47A",
-  red:      "#FF2D55",
-  redDim:   "#C4203F",
-  amber:    "#FFB300",
-  amberDim: "#E65100",
-  purple:   "#9C6FFF",
-  text:     "#CDD5F0",
-  textMid:  "#7B8BB5",
-  textDim:  "#3D4E70",
+  bg0:"#04060E", bg1:"#080D1A", bg2:"#0C1220", bg3:"#111828",
+  line:"#182038", line2:"#202A48",
+  cyan:"#00D9F5",  cyanDim:"#0091A8",
+  green:"#00F090", greenDim:"#00B86C",
+  red:"#F52D55",   redDim:"#B82040",
+  amber:"#FFB020", amberDim:"#CC7A00",
+  purple:"#9B6FFF",purpleDim:"#6B48CC",
+  flash:"#FFFFFF",
+  text:"#C8D4EE", textMid:"#70809E", textDim:"#384860",
 };
+const FM = "'JetBrains Mono','Fira Code','Courier New',monospace";
+const FC = "'Barlow Condensed','Arial Narrow',sans-serif";
 
-const FONT_MONO = "'JetBrains Mono', 'Fira Code', 'Courier New', monospace";
-const FONT_COND = "'Barlow Condensed', 'Arial Narrow', sans-serif";
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   COSTANTI FISICHE (fedeli al codice Python v2.0)
-═══════════════════════════════════════════════════════════════════════════ */
-const CAPACITY_M3   = 174_000;
+/* ════════════════════════════════════════════════════════════════════════
+   PHYSICAL CONSTANTS
+════════════════════════════════════════════════════════════════════════ */
 const LNG_DENSITY   = 0.45;
 const LNG_MMBTU_TON = 52.0;
 const HFO_PRICE_USD = 480;
 const HFO_E_MMBTU   = 40.5;
-const SPEED_KNOTS   = 19.5;
 const FUEL_DAY_MT   = 95;
-const BOR_NOM       = 0.15 / 100;
+const HFO_PER_MMBTU = HFO_PRICE_USD / HFO_E_MMBTU; // ~$11.85/MMBtu dual-fuel threshold
 
-const CAP_TONS  = CAPACITY_M3 * LNG_DENSITY;
-const CAP_MMBTU = CAP_TONS * LNG_MMBTU_TON;
+/* ════════════════════════════════════════════════════════════════════════
+   ROUTE DEFINITIONS
+   Thermal gradient: BOR multiplier by route thermal profile
+     EU  North-Atlantic:   ×1.00 (baseline)
+     AP  Suez (equatorial):×1.10 (+10% BOG from ambient heat)
+     AP  Cape (S.Atlantic): ×1.03 (+3% BOG, cooler water)
+════════════════════════════════════════════════════════════════════════ */
+const NM      = { EU:9_200, AP_SUEZ:16_100, AP_CAPE:20_200 };
+const THERMAL = { EU:1.00,  AP_SUEZ:1.10,   AP_CAPE:1.03   };
 
-const ROUTES = [
-  { id:"EU", label:"Europa",   dest:"TTF", nm:9_200,  regasFee:0.28, portO:280_000, portD:380_000, canal:0       },
-  { id:"AP", label:"Asia-Pac", dest:"JKM", nm:16_100, regasFee:0.35, portO:280_000, portD:420_000, canal:500_000 },
-];
+/* ════════════════════════════════════════════════════════════════════════
+   SEA STATE — BOR multiplier (Beaufort scale → BOG increase)
+   Empirical range: calm seas = nominal, storm = 1.4-1.8× due to
+   mechanical stress on insulation panels (membrane tanks).
+════════════════════════════════════════════════════════════════════════ */
+const SEA_STATE = {
+  calm:     { label:"CALM",     mult:1.00, desc:"Beaufort ≤3" },
+  moderate: { label:"MODERATE", mult:1.20, desc:"Beaufort 4-5" },
+  rough:    { label:"ROUGH",    mult:1.50, desc:"Beaufort 6-7" },
+  storm:    { label:"STORM",    mult:1.80, desc:"Beaufort ≥8"  },
+};
 
-function travelDays(nm) { return nm / (SPEED_KNOTS * 24); }
+/* ════════════════════════════════════════════════════════════════════════
+   STRESS SCENARIOS — Black Swan Edition
+════════════════════════════════════════════════════════════════════════ */
+const SS = {
+  blackSea: {
+    label:"BLACK SEA CLOSURE", icon:"⚔", color:T.red,
+    mHH:1.10, mTTF:3.00, mJKM:1.50, volMult:3.0,
+    note:"TTF ×3 · Russia supply disruption · EU supply −15%",
+  },
+  hurricane: {
+    label:"US GULF HURRICANE", icon:"🌀", color:T.amber,
+    mHH:1.30, mTTF:1.10, mJKM:1.10, volMult:1.8,
+    note:"Sabine Pass offline · HH +30% · LNG alternatives spike",
+  },
+  glut: {
+    label:"LNG GLUT", icon:"📉", color:T.purple,
+    mHH:0.75, mTTF:0.82, mJKM:0.80, volMult:0.7,
+    note:"Structural oversupply · HH −25% · JKM −20% · TTF −18%",
+  },
+};
 
-function calcProfit(hh, destUsd, charterRate, route) {
-  const td       = travelDays(route.nm);
-  const delivPct = Math.pow(1 - BOR_NOM, td);
-  const deliv    = CAP_MMBTU * delivPct;
-  const bog_mmbtu = CAP_MMBTU * (1 - delivPct);
-  const hfo_cov  = bog_mmbtu / HFO_E_MMBTU;
-  const net_hfo  = Math.max(0, FUEL_DAY_MT * td - hfo_cov);
-  const fuel     = net_hfo * HFO_PRICE_USD;
-  const supply   = CAP_MMBTU * hh;
-  const charter  = charterRate * td;
-  const regas    = deliv * route.regasFee;
-  const ports    = route.portO + route.portD + route.canal;
-  const revenue  = deliv * destUsd;
-  const total    = supply + charter + fuel + regas + ports;
-  return { profit:revenue-total, revenue, supply, charter, fuel, regas, ports, total, deliv, td };
+/* ════════════════════════════════════════════════════════════════════════
+   DEFAULT PARAMETERS (all Sidebar-overrideable)
+   ─────────────────────────────────────────────────────────────────────
+   FIX #1  spaSlope/sTolling/sLiquefaction → real acquisition cost
+   FIX #2  heelM3 → tank never fully loaded (cooldown reserve)
+   FIX #3  seaState → BOR multiplier from sea conditions
+   FIX #4  ballastFactor → charter cost includes return voyage
+   FIX #7  blPriceLocked/blPrice → B/L price lock mechanism
+════════════════════════════════════════════════════════════════════════ */
+const DP = {
+  // Vessel
+  capacityM3:        174_000,
+  heelM3:              1_500,  // FIX#2 — cooldown heel, never tradeable
+  borRate:              0.15,  // %/day nominal (shipyard spec)
+  speedKnots:           19.5,
+  seaState:           "calm",  // FIX#3 — key: calm/moderate/rough/storm
+
+  // SPA Contract — FIX#1
+  spaSlope:            1.115,  // HH indexation slope (typ. 110-115%)
+  sTolling:             2.50,  // $/MMBtu — liquefaction tolling fee
+  sLiquefaction:        0.30,  // $/MMBtu — loading/liquefaction costs
+  // Acquisition cost formula:  HH × spaSlope + sTolling + sLiquefaction
+  // At HH=$3.52: cost = $4.55/MMBtu vs naive $3.52 → 29% higher
+
+  // Charter — FIX#4
+  charterRate:        85_000,  // $/day
+  ballastFactor:        0.85,  // ballast days = laden days × 0.85
+  // Total charter per voyage = charterRate × (laden_days + ballast_days)
+  // EU example: 19d laden + 16d ballast = 35d total (not 19d)
+
+  // Route
+  canalEU:                 0,
+  canalAP:           500_000,
+  warRiskSuez:       300_000,
+  portOrigin:        280_000,
+  portDest:          380_000,
+  useCape:              false,
+  suezWarActive:        false,
+  diversionPenalty:  800_000,
+  regasFeeEU:           0.28,
+  regasFeeAP:           0.35,
+
+  // B/L Price Lock — FIX#7
+  blPriceLocked:        false, // when true, use blPrice as fixed sell price
+  blPriceEU:               0,  // $/MMBtu locked sell price EU
+  blPriceAP:               0,  // $/MMBtu locked sell price AP
+
+  // Stochastic
+  lambdaJump:            0.5,
+  sigmaJump:             0.30,
+};
+
+/* ════════════════════════════════════════════════════════════════════════
+   ROUTE RESOLVER
+════════════════════════════════════════════════════════════════════════ */
+function resolveRoute(id, p) {
+  if (id === "EU") return {
+    nm: NM.EU, thermal: THERMAL.EU, canal: p.canalEU,
+    warRisk: 0, regasFee: p.regasFeeEU,
+  };
+  const key = p.useCape ? "AP_CAPE" : "AP_SUEZ";
+  return {
+    nm: NM[key], thermal: THERMAL[key],
+    canal:   p.useCape ? 0 : p.canalAP,
+    warRisk: p.useCape ? 0 : (p.suezWarActive ? p.warRiskSuez : 0),
+    regasFee: p.regasFeeAP,
+  };
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   ORNSTEIN-UHLENBECK + CHOLESKY (replica RiskEngine Python v2.0)
-   κ=0.15/anno | corr HH/TTF=0.65 | HH/JKM=0.55 | TTF/JKM=0.70
-═══════════════════════════════════════════════════════════════════════════ */
+function travelDays(nm, spd) { return nm / (spd * 24); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   CORE P&L ENGINE — Corrected for Real Trading Economics
+   ─────────────────────────────────────────────────────────────────────
+   FIX#1  Supply cost = loadMmbtu × (HH×slope + tolling + liquefaction)
+          NOT loadMmbtu × HH_spot — that was ~29% too cheap
+   FIX#2  loadMmbtu = (capacityM3 − heelM3) × density × mmbtu_factor
+          Heel is non-tradeable cooldown reserve
+   FIX#3  borEff = borRate × thermalFactor × seaStateMult
+          Sea state amplifies BOG by up to ×1.8 in storm conditions
+   FIX#4  charter = charterRate × (ladenDays + ballastDays)
+          Ballast voyage is charterer's cost — typically 80-90% of laden
+   FIX#7  sellPrice = blPrice if locked, else live market price
+          B/L price fixing locks the revenue side of the trade
+   Dual-Fuel: BOG opportunity cost when HH > $11.85/MMBtu threshold
+════════════════════════════════════════════════════════════════════════ */
+function calcProfit(hh, destUsd, p, routeId, extraDelayDays = 0) {
+  const route   = resolveRoute(routeId, p);
+  const seaMult = SEA_STATE[p.seaState]?.mult ?? 1.0;
+
+  // FIX#2 — Heel deduction
+  const heelMmbtu  = p.heelM3 * LNG_DENSITY * LNG_MMBTU_TON;
+  const loadMmbtu  = Math.max(0, p.capacityM3 * LNG_DENSITY * LNG_MMBTU_TON - heelMmbtu);
+
+  // FIX#3 — Effective BOR with thermal gradient and sea state
+  const borNom  = p.borRate / 100;
+  const borEff  = borNom * route.thermal * seaMult;
+  const td      = travelDays(route.nm, p.speedKnots) + extraDelayDays;
+  const deliv   = loadMmbtu * Math.pow(1 - borEff, td);
+  const bog     = loadMmbtu - deliv;
+
+  // Dual-fuel: BOG offsets HFO; if HH > threshold, BOG has positive opportunity cost
+  const bogHfoEquiv = bog / HFO_E_MMBTU;
+  const netHfo      = Math.max(0, FUEL_DAY_MT * td - bogHfoEquiv);
+  const bogOppCost  = bog * Math.max(0, hh * p.spaSlope - HFO_PER_MMBTU); // use SPA price for opp cost
+  const fuel        = netHfo * HFO_PRICE_USD + bogOppCost;
+  const hfoCost     = netHfo * HFO_PRICE_USD;
+
+  // FIX#1 — SPA acquisition cost (not spot HH)
+  const acqPerMmbtu = hh * p.spaSlope + p.sTolling + p.sLiquefaction;
+  const supply      = loadMmbtu * acqPerMmbtu;
+
+  // FIX#4 — Charter including ballast return voyage
+  const ballastDays = td * p.ballastFactor;
+  const charter     = p.charterRate * (td + ballastDays);
+
+  const regas  = deliv * route.regasFee;
+  const ports  = p.portOrigin + p.portDest + route.canal + route.warRisk;
+
+  // FIX#7 — B/L price lock: use fixed sell price if position is locked
+  const blLocked = p.blPriceLocked && (routeId === "EU" ? p.blPriceEU : p.blPriceAP) > 0;
+  const sellPrice = blLocked
+    ? (routeId === "EU" ? p.blPriceEU : p.blPriceAP)
+    : destUsd;
+
+  const revenue = deliv * sellPrice;
+  const total   = supply + charter + fuel + regas + ports;
+
+  // Break-even destination price (minimum sell price to cover all costs)
+  const breakEvenDest = (supply + charter + fuel + regas + ports) / Math.max(deliv, 1);
+  // Margin over break-even (trader's operative KPI)
+  const marginPerMmbtu = sellPrice - breakEvenDest;
+  const marginTotal    = marginPerMmbtu * deliv;
+
+  return {
+    profit: revenue - total,
+    revenue, supply, charter, fuel, hfoCost, regas, ports, total,
+    deliv, td, bog, bogOppCost, borEff,
+    heelMmbtu, loadMmbtu, ballastDays,
+    acqPerMmbtu, breakEvenDest, marginPerMmbtu, marginTotal,
+    sellPrice, blLocked,
+  };
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   ROUTE BREAK-EVEN: Suez vs Cape
+════════════════════════════════════════════════════════════════════════ */
+function calcRouteBreakeven(hh, jkm, p) {
+  const pSuez = calcProfit(hh, jkm, { ...p, useCape:false }, "AP");
+  const pCape = calcProfit(hh, jkm, { ...p, useCape:true  }, "AP");
+  const tdS   = travelDays(NM.AP_SUEZ, p.speedKnots);
+  const tdC   = travelDays(NM.AP_CAPE, p.speedKnots);
+  return {
+    suezProfit: pSuez.profit, capeProfit: pCape.profit,
+    optimal: pSuez.profit >= pCape.profit ? "SUEZ" : "CAPE",
+    extraDays: tdC - tdS,
+    suezFees: p.canalAP + (p.suezWarActive ? p.warRiskSuez : 0),
+    capeExtraCost: (tdC - tdS) * p.charterRate * (1 + p.ballastFactor),
+  };
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   CARGO DIVERSION ENGINE
+════════════════════════════════════════════════════════════════════════ */
+function calcCargoDiversion(hh, ttfUsd, jkm, p, progressFrac = 0.5) {
+  const seaMult   = SEA_STATE[p.seaState]?.mult ?? 1.0;
+  const heelMmbtu = p.heelM3 * LNG_DENSITY * LNG_MMBTU_TON;
+  const loadMmbtu = Math.max(0, p.capacityM3 * LNG_DENSITY * LNG_MMBTU_TON - heelMmbtu);
+  const borNom    = p.borRate / 100;
+  const spd       = p.speedKnots;
+
+  const nmDone    = NM.EU * progressFrac;
+  const borEU     = borNom * THERMAL.EU * seaMult;
+  const tdDone    = travelDays(nmDone, spd);
+  const cargoNow  = loadMmbtu * Math.pow(1 - borEU, tdDone);
+
+  const nmEuLeft  = NM.EU - nmDone;
+  const tdEuLeft  = travelDays(nmEuLeft, spd);
+  const delivEU   = cargoNow * Math.pow(1 - borEU, tdEuLeft);
+  const charterEU = p.charterRate * tdEuLeft * (1 + p.ballastFactor);
+  const revenueEU = delivEU * ttfUsd - delivEU * p.regasFeeEU - p.portDest - charterEU;
+
+  const nmAP     = p.useCape ? NM.AP_CAPE : NM.AP_SUEZ;
+  const nmDivert = Math.max(nmAP - nmDone, nmEuLeft * 1.05);
+  const tdDiv    = travelDays(nmDivert, spd);
+  const borAP    = borNom * (p.useCape ? THERMAL.AP_CAPE : THERMAL.AP_SUEZ) * seaMult;
+  const delivAP  = cargoNow * Math.pow(1 - borAP, tdDiv);
+  const charterAP = p.charterRate * tdDiv * (1 + p.ballastFactor);
+  const revenueAP = delivAP * jkm - delivAP * p.regasFeeAP
+    - p.portDest - charterAP - p.diversionPenalty;
+
+  const delta        = revenueAP - revenueEU;
+  const jkmThreshold = ttfUsd
+    + p.diversionPenalty / Math.max(delivAP, 1)
+    + (p.regasFeeAP - p.regasFeeEU)
+    + (tdDiv - tdEuLeft) * p.charterRate * (1 + p.ballastFactor) / Math.max(delivAP, 1);
+
+  return { shouldDivert: delta > 0, delta, jkmThreshold, revenueEU, revenueAP };
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   STOCHASTIC ENGINE
+   OU + Cholesky Correlation + Jump Diffusion (Merton 1976)
+   + Hawkes Process (conditional jump coupling TTF → JKM +60%)
+   + Suez congestion stochastic delay (log-normal waiting time)
+════════════════════════════════════════════════════════════════════════ */
 const OU_KAPPA = 0.15;
-const CORR_MAT = [[1.00,0.65,0.55],[0.65,1.00,0.70],[0.55,0.70,1.00]];
+const CORR = [[1,0.65,0.55],[0.65,1,0.70],[0.55,0.70,1]];
+const MU   = { hh:3.52, ttf:29.50, jkm:3.52*3.8+1.5 };
 
 function choleskyL(C) {
   const n=C.length, L=Array.from({length:n},()=>Array(n).fill(0));
@@ -88,681 +298,1361 @@ function choleskyL(C) {
   }
   return L;
 }
-const L_CHOL = choleskyL(CORR_MAT);
+const LC = choleskyL(CORR);
 
-function randn() {
+function randn(){
   let u=0,v=0;
-  while(!u) u=Math.random(); while(!v) v=Math.random();
+  while(!u)u=Math.random();while(!v)v=Math.random();
   return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
+}
+function poissonSample(lam){
+  if(lam<=0)return 0;
+  const L=Math.exp(-Math.min(lam,20));let k=0,p=1;
+  do{k++;p*=Math.random();}while(p>L);return k-1;
 }
 
 const VOL_PRESETS = {
-  low:    { hh:0.20, ttf:0.25, jkm:0.18 },
-  normal: { hh:0.45, ttf:0.55, jkm:0.40 },
-  high:   { hh:0.80, ttf:0.95, jkm:0.70 },
+  low:    {hh:0.20,ttf:0.25,jkm:0.18},
+  normal: {hh:0.45,ttf:0.55,jkm:0.40},
+  high:   {hh:0.80,ttf:0.95,jkm:0.70},
 };
 
-const MU = { hh:3.52, ttf:29.50, jkm:3.52*3.8+1.5 };
-
-function ouStep(prices, vols, dt) {
+function ouStep(prices, vols, dt){
   const z=[randn(),randn(),randn()];
-  const zc=[
-    L_CHOL[0][0]*z[0],
-    L_CHOL[1][0]*z[0]+L_CHOL[1][1]*z[1],
-    L_CHOL[2][0]*z[0]+L_CHOL[2][1]*z[1]+L_CHOL[2][2]*z[2],
-  ];
-  const floors=[0.30,5.0,6.0];
+  const zc=[LC[0][0]*z[0],LC[1][0]*z[0]+LC[1][1]*z[1],LC[2][0]*z[0]+LC[2][1]*z[1]+LC[2][2]*z[2]];
   return {
-    hh:  Math.max(prices.hh +OU_KAPPA*(MU.hh -prices.hh )*dt+vols.hh *prices.hh *Math.sqrt(dt)*zc[0], floors[0]),
-    ttf: Math.max(prices.ttf+OU_KAPPA*(MU.ttf-prices.ttf)*dt+vols.ttf*prices.ttf*Math.sqrt(dt)*zc[1], floors[1]),
-    jkm: Math.max(prices.jkm+OU_KAPPA*(MU.jkm-prices.jkm)*dt+vols.jkm*prices.jkm*Math.sqrt(dt)*zc[2], floors[2]),
+    hh:  Math.max(prices.hh  +(MU.hh  -prices.hh )*OU_KAPPA*dt+vols.hh *prices.hh *Math.sqrt(dt)*zc[0],0.30),
+    ttf: Math.max(prices.ttf +(MU.ttf -prices.ttf)*OU_KAPPA*dt+vols.ttf*prices.ttf*Math.sqrt(dt)*zc[1],5.00),
+    jkm: Math.max(prices.jkm +(MU.jkm -prices.jkm)*OU_KAPPA*dt+vols.jkm*prices.jkm*Math.sqrt(dt)*zc[2],6.00),
   };
 }
+function ttfToUsd(e,fx){return (e*fx)/3.41214;}
 
-function ttfToUsd(ttfEur, eurUsd) { return (ttfEur * eurUsd) / 3.41214; }
+/* ════════════════════════════════════════════════════════════════════════
+   MONTE CARLO — Uses corrected cost model (consistent with calcProfit)
+   All 9 fixes are applied inside the simulation loop:
+   SPA costs, heel, sea state BOR, ballast days, Hawkes coupling
+════════════════════════════════════════════════════════════════════════ */
+function runMCAdvanced(hh, ttfUsd, jkm, params, vols, stressMode=null, N=700){
+  const seaMult    = SEA_STATE[params.seaState]?.mult ?? 1.0;
+  const heelMmbtu  = params.heelM3 * LNG_DENSITY * LNG_MMBTU_TON;
+  const loadMmbtu  = Math.max(0, params.capacityM3*LNG_DENSITY*LNG_MMBTU_TON - heelMmbtu);
+  const borNom     = params.borRate/100;
+  const {charterRate,ballastFactor,spaSlope,sTolling,sLiquefaction,
+         regasFeeEU,regasFeeAP,portOrigin,portDest,lambdaJump=0.5,sigmaJump=0.30} = params;
+  const volMult    = stressMode ? (SS[stressMode]?.volMult??1) : 1;
+  const sv         = {hh:vols.hh*volMult, ttf:vols.ttf*volMult, jkm:vols.jkm*volMult};
+  const rEU        = resolveRoute("EU",params);
+  const rAP        = resolveRoute("AP",params);
+  const tdEU0      = travelDays(rEU.nm,params.speedKnots);
+  const tdAP0      = travelDays(rAP.nm,params.speedKnots);
+  const dt         = tdEU0/365;
+  const apTKey     = params.useCape ? "AP_CAPE" : "AP_SUEZ";
 
-/* ─── Monte Carlo 500 sim ────────────────────────────────────────────── */
-function runMC(hh, ttfUsd, jkm, charterRate, vols, N=500) {
-  const profits = [];
-  const dt = travelDays(ROUTES[0].nm)/365;
+  const pEU=[], pAP=[];
+
   for(let i=0;i<N;i++){
     const z=[randn(),randn(),randn()];
-    const zc=[L_CHOL[0][0]*z[0],L_CHOL[1][0]*z[0]+L_CHOL[1][1]*z[1],L_CHOL[2][0]*z[0]+L_CHOL[2][1]*z[1]+L_CHOL[2][2]*z[2]];
-    const hhS  = Math.max(hh   *(1+vols.hh *Math.sqrt(dt)*zc[0]),0.3);
-    const ttfS = Math.max(ttfUsd*(1+vols.ttf*Math.sqrt(dt)*zc[1]),3.0);
-    const delay= Math.max(0,Math.exp(randn()*0.5)-1);
-    const td   = travelDays(ROUTES[0].nm)+delay;
-    const deliv= CAP_MMBTU*Math.pow(1-BOR_NOM,td);
-    const cr   = charterRate*(1+randn()*0.05);
-    const bog  = CAP_MMBTU*(1-Math.pow(1-BOR_NOM,td));
-    const fuel = Math.max(0,FUEL_DAY_MT*td-bog/HFO_E_MMBTU)*HFO_PRICE_USD;
-    profits.push(deliv*ttfS - CAP_MMBTU*hhS - cr*td - fuel - deliv*0.28 - 660_000);
+    const zc=[LC[0][0]*z[0],LC[1][0]*z[0]+LC[1][1]*z[1],LC[2][0]*z[0]+LC[2][1]*z[1]+LC[2][2]*z[2]];
+
+    // Hawkes process: jump on TTF increases P(jump on JKM) by 60%
+    const nTTF  = poissonSample(lambdaJump*dt);
+    const nJKM  = poissonSample(lambdaJump*(1+(nTTF>0?0.60:0))*dt);
+    const nHH   = poissonSample(lambdaJump*0.25*dt);
+
+    const jF = (n,s)=>{
+      if(n===0)return{up:1,dn:1};
+      let ls=0;for(let j=0;j<n;j++)ls+=s*randn();
+      return{up:Math.exp(ls),dn:Math.exp(-ls*0.40)};
+    };
+    const jT=jF(nTTF,sigmaJump), jJ=jF(nJKM,sigmaJump), jH=jF(nHH,sigmaJump*0.5);
+
+    const hhS  = Math.max(hh   *(1+sv.hh *Math.sqrt(dt)*zc[0])*jH.dn, 0.30);
+    const ttfS = Math.max(ttfUsd*(1+sv.ttf*Math.sqrt(dt)*zc[1])*jT.up, 3.00);
+    const jkmS = Math.max(jkm  *(1+sv.jkm*Math.sqrt(dt)*zc[2])*jJ.up, 6.00);
+
+    const cr    = charterRate*(1+randn()*0.05);
+    const delay = Math.max(0,Math.exp(randn()*0.4)-1);
+    // Suez congestion stochastic delay (log-normal, ~0.5d mean when Suez active)
+    const suezC = !params.useCape ? Math.max(0,Math.exp(randn()*0.8)*0.5) : 0;
+
+    // FIX#1: SPA acquisition cost
+    const acqC  = hhS*spaSlope + sTolling + sLiquefaction;
+
+    // EU route
+    const tdEUs  = tdEU0+delay;
+    const borEUs = borNom*THERMAL.EU*seaMult;
+    const dEU    = loadMmbtu*Math.pow(1-borEUs, tdEUs);
+    const bogEU  = loadMmbtu-dEU;
+    const nHEU   = Math.max(0,FUEL_DAY_MT*tdEUs - bogEU/HFO_E_MMBTU);
+    const occEU  = bogEU*Math.max(0,hhS*spaSlope-HFO_PER_MMBTU);
+    // FIX#4: charter includes ballast
+    const chEU   = cr*(tdEUs+tdEUs*ballastFactor);
+    const blEU   = (params.blPriceLocked&&params.blPriceEU>0)?params.blPriceEU:ttfS;
+    pEU.push(dEU*blEU - loadMmbtu*acqC - chEU - nHEU*HFO_PRICE_USD - occEU
+             - dEU*regasFeeEU - rEU.canal - rEU.warRisk - portOrigin - portDest);
+
+    // AP route
+    const tdAPs  = tdAP0+delay*1.5+suezC;
+    const borAPs = borNom*THERMAL[apTKey]*seaMult;
+    const dAP    = loadMmbtu*Math.pow(1-borAPs, tdAPs);
+    const bogAP  = loadMmbtu-dAP;
+    const nHAP   = Math.max(0,FUEL_DAY_MT*tdAPs - bogAP/HFO_E_MMBTU);
+    const occAP  = bogAP*Math.max(0,hhS*spaSlope-HFO_PER_MMBTU);
+    const chAP   = cr*(tdAPs+tdAPs*ballastFactor);
+    const blAP   = (params.blPriceLocked&&params.blPriceAP>0)?params.blPriceAP:jkmS;
+    pAP.push(dAP*blAP - loadMmbtu*acqC - chAP - nHAP*HFO_PRICE_USD - occAP
+             - dAP*regasFeeAP - rAP.canal - rAP.warRisk - portOrigin - portDest);
   }
-  profits.sort((a,b)=>a-b);
-  const mean=profits.reduce((s,v)=>s+v,0)/N;
-  const std =Math.sqrt(profits.reduce((s,v)=>s+(v-mean)**2,0)/N);
-  const var95=profits[Math.floor(N*0.05)];
-  const var99=profits[Math.floor(N*0.01)];
-  const probP=profits.filter(v=>v>0).length/N*100;
-  const mn=profits[0], mx=profits[N-1], step=(mx-mn)/24;
-  const bins=Array.from({length:24},(_,i)=>{
-    const lo=mn+step*i, hi=lo+step;
-    return {x:((lo+hi)/2/1e6).toFixed(2), n:profits.filter(v=>v>=lo&&v<hi).length, pos:(lo+hi)/2>0};
-  });
-  return {mean,std,var95,var99,probP,sharpe:mean/Math.max(std,1),bins,p5:profits[Math.floor(N*0.05)],p95:profits[Math.floor(N*0.95)]};
+
+  const stats=(arr)=>{
+    const s=[...arr].sort((a,b)=>a-b);
+    const mean=s.reduce((a,v)=>a+v,0)/N;
+    const std=Math.sqrt(s.reduce((a,v)=>a+(v-mean)**2,0)/N);
+    const v95=s[Math.floor(N*0.05)], v99=s[Math.floor(N*0.01)];
+    const mn=s[0],mx=s[N-1],step=(mx-mn)/24||1;
+    const bins=Array.from({length:24},(_,i)=>{
+      const lo=mn+step*i,mid=lo+step/2;
+      return{x:(mid/1e6).toFixed(2),n:s.filter(v=>v>=lo&&v<lo+step).length,
+             pos:mid>0,vz:mid<v99?2:mid<v95?1:0};
+    });
+    return{mean,std,var95:v95,var99:v99,bins,
+           probP:s.filter(v=>v>0).length/N*100,
+           sharpe:mean/Math.max(std,1),p95:s[Math.floor(N*0.95)]};
+  };
+
+  const eu=stats(pEU), ap=stats(pAP);
+  const volRatio=ap.std/Math.max(eu.std,1);
+  return{eu,ap,volRatio,riskWarn:volRatio>1.8,...eu};
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   FRANKFURTER API (BCE, gratuita, no-key, CORS OK)
-   → EUR/USD reale aggiornato ogni 60 secondi
-═══════════════════════════════════════════════════════════════════════════ */
-async function fetchFX() {
-  try {
-    const r = await fetch("https://api.frankfurter.app/latest?from=EUR&to=USD,JPY",
-      { signal: AbortSignal.timeout(7000) });
-    if(!r.ok) throw new Error(r.status);
-    const d = await r.json();
-    return { eurUsd: d.rates.USD, usdJpy: d.rates.JPY / d.rates.USD };
-  } catch { return null; }
+/* ════════════════════════════════════════════════════════════════════════
+   SENSITIVITY — Tornado Chart ±1% per driver (EU route)
+════════════════════════════════════════════════════════════════════════ */
+function calcSpider(p, hh, ttfUsd, jkm){
+  const d=0.01;
+  const base=calcProfit(hh,ttfUsd,p,"EU").marginTotal;
+  if(Math.abs(base)<1)return[];
+  const eu=(mutP,h=hh,t=ttfUsd)=>calcProfit(h,t,mutP,"EU").marginTotal;
+  const ap=(mutP,h=hh,j=jkm)=>calcProfit(h,j,mutP,"AP").marginTotal;
+  const pct=v=>+((v-base)/Math.abs(base)*100).toFixed(2);
+  return [
+    {label:"HH Gas Price",   up:pct(eu(p,hh*(1+d))),  dn:pct(eu(p,hh*(1-d)))},
+    {label:"TTF Dest Price", up:pct(eu(p,hh,ttfUsd*(1+d))), dn:pct(eu(p,hh,ttfUsd*(1-d)))},
+    {label:"Charter Rate",   up:pct(eu({...p,charterRate:p.charterRate*(1+d)})), dn:pct(eu({...p,charterRate:p.charterRate*(1-d)}))},
+    {label:"SPA Slope",      up:pct(eu({...p,spaSlope:p.spaSlope*(1+d)})), dn:pct(eu({...p,spaSlope:p.spaSlope*(1-d)}))},
+    {label:"Boil-Off Rate",  up:pct(eu({...p,borRate:p.borRate*(1+d)})), dn:pct(eu({...p,borRate:p.borRate*(1-d)}))},
+    {label:"Ballast Factor", up:pct(eu({...p,ballastFactor:p.ballastFactor*(1+d)})), dn:pct(eu({...p,ballastFactor:p.ballastFactor*(1-d)}))},
+    {label:"JKM (AP Alt.)",  up:pct(ap(p,hh,jkm*(1+d))), dn:pct(ap(p,hh,jkm*(1-d)))},
+  ].sort((a,b)=>Math.abs(b.up)-Math.abs(a.up))
+   .map(r=>({subject:r.label,upside:r.up,downside:r.dn}));
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   UTILITY
-═══════════════════════════════════════════════════════════════════════════ */
-const f3  = v => (+v).toFixed(3);
-const f2  = v => (+v).toFixed(2);
-const fM  = v => `${v>=0?"+":""}${(v/1e6).toFixed(2)}M`;
-const fMa = v => `${(v/1e6).toFixed(2)}M`;
-const fK  = v => `${(v/1e3).toFixed(1)}k`;
-const ts  = () => new Date().toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
-const pColor = v => v>0?T.green:v<0?T.red:T.textMid;
-const arrow  = v => v>0?"▲":v<0?"▼":"─";
+/* ════════════════════════════════════════════════════════════════════════
+   FX FEED — Frankfurter/BCE
+════════════════════════════════════════════════════════════════════════ */
+async function fetchFX(){
+  try{
+    const r=await fetch("https://api.frankfurter.app/latest?from=EUR&to=USD,JPY",
+      {signal:AbortSignal.timeout(7000)});
+    if(!r.ok)throw 0;
+    const d=await r.json();
+    return{eurUsd:d.rates.USD,usdJpy:d.rates.JPY/d.rates.USD};
+  }catch{return null;}
+}
 
-/* ─── Custom Tooltip ──────────────────────────────────────────────────── */
-function Tip({active,payload,label,pre="$",dec=3}) {
-  if(!active||!payload?.length) return null;
-  return (
-    <div style={{background:"#0B0F1CEE",border:`1px solid ${T.line2}`,
-      padding:"6px 10px",borderRadius:2,fontFamily:FONT_MONO,fontSize:10}}>
+/* ════════════════════════════════════════════════════════════════════════
+   FORMATTERS
+════════════════════════════════════════════════════════════════════════ */
+const f2   = v=>(+v).toFixed(2);
+const f3   = v=>(+v).toFixed(3);
+const fM   = v=>`${v>=0?"+":""}${(v/1e6).toFixed(2)}M`;
+const fMa  = v=>`${(v/1e6).toFixed(2)}M`;
+const fK   = v=>`${(v/1e3).toFixed(1)}k`;
+const fDol = v=>v>=1e6?`$${(v/1e6).toFixed(2)}M`:`$${(v/1e3).toFixed(0)}k`;
+const ts   = ()=>new Date().toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+const pColor=v=>v>0?T.green:v<0?T.red:T.textMid;
+const arrow =v=>v>0?"▲":v<0?"▼":"─";
+
+/* ════════════════════════════════════════════════════════════════════════
+   UI ATOMS
+════════════════════════════════════════════════════════════════════════ */
+function Tip({active,payload,label,pre="$",dec=3}){
+  if(!active||!payload?.length)return null;
+  return(
+    <div style={{background:"#080D1AEE",border:`1px solid ${T.line2}`,
+      padding:"6px 10px",borderRadius:2,fontFamily:FM,fontSize:10}}>
       <div style={{color:T.textMid,marginBottom:3,paddingBottom:3,
         borderBottom:`1px solid ${T.line}`}}>{label}</div>
       {payload.map((p,i)=>(
-        <div key={i} style={{color:p.color||T.text}}>
-          {p.name}: {pre}{(+p.value).toFixed(dec)}
-        </div>
+        <div key={i} style={{color:p.color||T.text}}>{p.name}: {pre}{(+p.value).toFixed(dec)}</div>
       ))}
     </div>
   );
 }
-
-/* ─── Section Header ──────────────────────────────────────────────────── */
-function SH({label,accent=T.cyan,right}) {
-  return (
+function SH({label,accent=T.cyan,right}){
+  return(
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-      marginBottom:8,paddingBottom:5,borderBottom:`1px solid ${T.line}`}}>
-      <span style={{fontFamily:FONT_COND,fontSize:11,fontWeight:700,color:accent,
+      marginBottom:7,paddingBottom:5,borderBottom:`1px solid ${T.line}`}}>
+      <span style={{fontFamily:FC,fontSize:11,fontWeight:700,color:accent,
         letterSpacing:"0.15em",textTransform:"uppercase"}}>{label}</span>
-      {right&&<span style={{fontFamily:FONT_MONO,fontSize:9,color:T.textDim}}>{right}</span>}
+      {right&&<span style={{fontFamily:FM,fontSize:9,color:T.textDim}}>{right}</span>}
     </div>
   );
 }
-
-/* ─── Card ────────────────────────────────────────────────────────────── */
-function Card({accent=T.cyan,children,style={}}) {
-  return (
+function Card({accent=T.cyan,children,style={}}){
+  return(
     <div style={{background:T.bg1,border:`1px solid ${T.line}`,
-      borderTop:`2px solid ${accent}`,borderRadius:2,padding:"12px 14px",...style}}>
+      borderTop:`2px solid ${accent}`,borderRadius:2,padding:"10px 12px",
+      minWidth:0,...style}}>
       {children}
     </div>
   );
 }
-
-/* ─── Badge ───────────────────────────────────────────────────────────── */
-function Badge({label,color=T.cyan}) {
-  return (
-    <span style={{fontFamily:FONT_MONO,fontSize:9,fontWeight:700,letterSpacing:"0.1em",
+function Badge({label,color=T.cyan}){
+  return(
+    <span style={{fontFamily:FM,fontSize:9,fontWeight:700,letterSpacing:"0.1em",
       color,background:`${color}18`,border:`1px solid ${color}44`,
-      padding:"2px 7px",borderRadius:2,textTransform:"uppercase"}}>
+      padding:"2px 6px",borderRadius:2,textTransform:"uppercase",whiteSpace:"nowrap"}}>
       {label}
     </span>
   );
 }
-
-/* ─── Ticker Cell ─────────────────────────────────────────────────────── */
-function Ticker({label,value,delta,unit,color}) {
+function Ticker({label,value,delta,unit,color}){
   const ref=useRef();
   useEffect(()=>{
-    if(!ref.current) return;
+    if(!ref.current)return;
     ref.current.style.color=T.flash;
-    const t=setTimeout(()=>{ if(ref.current) ref.current.style.color=color; },120);
-    return ()=>clearTimeout(t);
+    const t=setTimeout(()=>{if(ref.current)ref.current.style.color=color;},120);
+    return()=>clearTimeout(t);
   },[value]);
-  return (
-    <Card accent={color} style={{padding:"10px 12px"}}>
-      <div style={{fontFamily:FONT_COND,fontSize:9,fontWeight:700,color:T.textMid,
-        letterSpacing:"0.14em",textTransform:"uppercase",marginBottom:4}}>{label}</div>
-      <div ref={ref} style={{fontFamily:FONT_MONO,fontSize:17,fontWeight:700,
+  return(
+    <Card accent={color} style={{padding:"8px 10px"}}>
+      <div style={{fontFamily:FC,fontSize:9,fontWeight:700,color:T.textMid,
+        letterSpacing:"0.14em",textTransform:"uppercase",marginBottom:3}}>{label}</div>
+      <div ref={ref} style={{fontFamily:FM,fontSize:15,fontWeight:700,
         color,lineHeight:1,transition:"color .12s"}}>
-        {value}
-        <span style={{fontSize:9,color:T.textDim,marginLeft:4}}>{unit}</span>
+        {value}<span style={{fontSize:8,color:T.textDim,marginLeft:3}}>{unit}</span>
       </div>
-      <div style={{fontFamily:FONT_MONO,fontSize:9,color:pColor(delta),marginTop:3}}>
+      <div style={{fontFamily:FM,fontSize:8,color:pColor(delta),marginTop:2}}>
         {arrow(delta)} {Math.abs(delta).toFixed(3)}
       </div>
     </Card>
   );
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   MAIN DASHBOARD
-═══════════════════════════════════════════════════════════════════════════ */
-export default function LNGDashboard() {
-  const [px,setPx]           = useState({hh:3.52,ttf:29.50,jkm:14.98,eurUsd:1.085,usdJpy:149.5});
-  const [prevPx,setPrevPx]   = useState(null);
-  const [history,setHistory] = useState([]);
-  const [spreadH,setSpreadH] = useState([]);
-  const [profitH,setProfitH] = useState([]);
-  const [mc,setMc]           = useState(null);
-  const [charter,setCharter] = useState(85_000);
-  const [volMode,setVolMode] = useState("normal");
-  const [isLive,setIsLive]   = useState(true);
-  const [tick,setTick]       = useState(0);
-  const [fxOk,setFxOk]       = useState(false);
-  const [fxAge,setFxAge]     = useState(0);
-  const tickRef = useRef(0);
-  const intervalRef = useRef(null);
+/* ════════════════════════════════════════════════════════════════════════
+   MARGIN ANALYSIS PANEL — FIX#9: Primary Trader KPI
+   Replaces raw "Profitto Netto Live" as top-level display.
+   Shows acquisition cost, break-even price, current market vs threshold,
+   and margin $/MMBtu — the operative metric for a trading desk.
+════════════════════════════════════════════════════════════════════════ */
+function MarginPanel({pEu, pAp, ttfUsd, jkm, params}){
+  const routes=[
+    {id:"EU",label:"EU / TTF",  p:pEu, mkt:ttfUsd, color:T.cyan,  dest:"Rotterdam"},
+    {id:"AP",label:"AP / JKM",  p:pAp, mkt:jkm,    color:T.amber, dest:"Tokyo"},
+  ];
+  return(
+    <Card accent={T.green}>
+      <SH label="Margin over Break-even" right="$/MMBtu · Trader Primary KPI" accent={T.green}/>
 
-  /* ── FX reale BCE ogni 60s ──────────────────────────────────────────── */
+      {/* Acquisition cost breakdown — FIX#1 */}
+      <div style={{background:T.bg2,border:`1px solid ${T.line}`,
+        borderLeft:`2px solid ${T.amber}`,padding:"6px 9px",borderRadius:2,marginBottom:7}}>
+        <div style={{fontFamily:FC,fontSize:9,fontWeight:700,color:T.amber,
+          letterSpacing:"0.14em",marginBottom:4}}>SPA ACQUISITION COST</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:5}}>
+          {[
+            {l:"HH Spot",    v:`$${f3(pEu.sellPrice<1?0.1:pEu.acqPerMmbtu/params.spaSlope)}`,c:T.cyan},
+            {l:"×Slope",     v:`×${params.spaSlope.toFixed(3)}`,                            c:T.textMid},
+            {l:"+Tolling",   v:`+$${params.sTolling.toFixed(2)}`,                           c:T.amber},
+            {l:"ACQ COST",   v:`$${pEu.acqPerMmbtu.toFixed(3)}/M`,                         c:T.red},
+          ].map((s,i)=>(
+            <div key={i}>
+              <div style={{fontFamily:FC,fontSize:8,color:T.textDim}}>{s.l}</div>
+              <div style={{fontFamily:FM,fontSize:11,fontWeight:700,color:s.c}}>{s.v}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Per-route margin analysis */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5}}>
+        {routes.map(r=>{
+          const inMoney = r.p.marginPerMmbtu > 0;
+          const marginPct = r.p.breakEvenDest > 0
+            ? ((r.mkt - r.p.breakEvenDest) / r.p.breakEvenDest * 100)
+            : 0;
+          return(
+            <div key={r.id} style={{background:T.bg2,padding:"7px 9px",borderRadius:2,
+              border:`1px solid ${inMoney?r.color:T.red}`,
+              borderLeft:`3px solid ${inMoney?r.color:T.red}`}}>
+              <div style={{fontFamily:FC,fontSize:10,fontWeight:700,
+                color:r.color,letterSpacing:"0.12em",marginBottom:5}}>
+                {r.label}  ·  {r.dest}
+                {r.p.blLocked && <span style={{fontFamily:FM,fontSize:7,
+                  color:T.purple,marginLeft:6}}>🔒 B/L LOCKED</span>}
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4}}>
+                {[
+                  {l:"Market",       v:`$${f3(r.mkt)}`,                                c:r.color},
+                  {l:"Break-even",   v:`$${f3(r.p.breakEvenDest)}`,                    c:T.textMid},
+                  {l:"Margin/MMBtu", v:`${r.p.marginPerMmbtu>=0?"+":" "}$${f2(r.p.marginPerMmbtu)}`, c:inMoney?T.green:T.red},
+                  {l:"Total Margin", v:fM(r.p.marginTotal),                             c:inMoney?T.green:T.red},
+                  {l:"Margin %",     v:`${marginPct>=0?"+":""}${marginPct.toFixed(1)}%`, c:inMoney?T.green:T.red},
+                  {l:"Deliver",      v:`${(r.p.deliv/1e6).toFixed(1)}M MMBtu`,          c:T.textMid},
+                ].map((s,i)=>(
+                  <div key={i}>
+                    <div style={{fontFamily:FC,fontSize:8,color:T.textDim}}>{s.l}</div>
+                    <div style={{fontFamily:FM,fontSize:10,fontWeight:700,color:s.c}}>{s.v}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{marginTop:5,background:T.bg0,borderRadius:2,height:6,overflow:"hidden"}}>
+                <div style={{
+                  height:"100%",borderRadius:2,transition:"width 0.4s",
+                  background:inMoney?r.color:T.red,
+                  width:`${Math.min(100,Math.max(0,(r.mkt/Math.max(r.p.breakEvenDest,0.1))*60))}%`,
+                }}/>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",
+                fontFamily:FM,fontSize:7,color:T.textDim,marginTop:2}}>
+                <span>$0</span>
+                <span>BEP ${f3(r.p.breakEvenDest)}</span>
+                <span>MKT ${f3(r.mkt)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Ballast cost note — FIX#4 */}
+      <div style={{fontFamily:FM,fontSize:7.5,color:T.textDim,marginTop:6,
+        paddingTop:4,borderTop:`1px solid ${T.line}`,
+        display:"flex",gap:12,flexWrap:"wrap"}}>
+        <span>Laden EU: {pEu.td.toFixed(1)}d</span>
+        <span>+ Ballast: {pEu.ballastDays.toFixed(1)}d</span>
+        <span style={{color:T.amber}}>Total charter: {fDol(pEu.charter)}</span>
+        <span>Heel: {(pEu.heelMmbtu/1e3).toFixed(0)}k MMBtu locked</span>
+        <span>Sea state: ×{SEA_STATE[params.seaState]?.mult.toFixed(2)}</span>
+      </div>
+    </Card>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   STRESS PANEL
+════════════════════════════════════════════════════════════════════════ */
+function StressPanel({stressMode,setStressMode}){
+  return(
+    <div style={{display:"grid",gridTemplateColumns:"auto 1fr 1fr 1fr 1fr",gap:5,
+      alignItems:"center",background:T.bg1,border:`1px solid ${T.line}`,
+      borderLeft:`3px solid ${T.red}`,borderRadius:2,padding:"6px 11px",marginBottom:6}}>
+      <span style={{fontFamily:FC,fontSize:9,fontWeight:700,color:T.red,
+        letterSpacing:"0.18em",whiteSpace:"nowrap"}}>STRESS TESTS</span>
+      {Object.entries(SS).map(([key,s])=>{
+        const active=stressMode===key;
+        return(
+          <button key={key} onClick={()=>setStressMode(active?null:key)} style={{
+            fontFamily:FC,fontSize:10,fontWeight:700,letterSpacing:"0.1em",
+            cursor:"pointer",borderRadius:2,padding:"5px 9px",
+            border:`1px solid ${s.color}`,
+            background:active?`${s.color}30`:`${s.color}0A`,
+            color:active?s.color:T.textMid,textTransform:"uppercase",transition:"all .15s",
+            textAlign:"left",
+          }}>
+            <span style={{marginRight:5}}>{s.icon}</span>{s.label}
+            {active&&<span style={{display:"block",fontSize:7,color:T.textDim,
+              fontFamily:FM,fontWeight:400,marginTop:1}}>{s.note}</span>}
+          </button>
+        );
+      })}
+      <button onClick={()=>setStressMode(null)} style={{
+        fontFamily:FC,fontSize:10,fontWeight:700,letterSpacing:"0.1em",
+        cursor:"pointer",borderRadius:2,padding:"5px 9px",
+        border:`1px solid ${T.line2}`,background:"transparent",
+        color:stressMode?T.textMid:T.textDim,textTransform:"uppercase",
+      }}>↺ BASELINE</button>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SIDEBAR v5.0 — includes all 9 fix parameters
+════════════════════════════════════════════════════════════════════════ */
+function Sidebar({params,onUpdate,isOpen,onToggle}){
+  const Sec=({title,accent=T.cyan,sub,children})=>(
+    <div style={{marginBottom:15}}>
+      <div style={{fontFamily:FC,fontSize:9,fontWeight:700,color:accent,
+        letterSpacing:"0.18em",textTransform:"uppercase",marginBottom:2,
+        paddingBottom:4,borderBottom:`1px solid ${T.line2}`}}>{title}</div>
+      {sub&&<div style={{fontFamily:FM,fontSize:7.5,color:T.textDim,
+        marginBottom:6,lineHeight:1.5}}>{sub}</div>}
+      {children}
+    </div>
+  );
+  const Param=({label,value,min,max,step,onChange,unit,prec=0,color=T.cyan,note})=>(
+    <div style={{marginBottom:9}}>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:2,alignItems:"baseline"}}>
+        <span style={{fontFamily:FC,fontSize:9,color:T.textMid,letterSpacing:"0.1em"}}>{label}</span>
+        <span style={{fontFamily:FM,fontSize:11,fontWeight:700,color}}>
+          {value.toFixed(prec)} <span style={{fontSize:8,color:T.textDim}}>{unit}</span>
+        </span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value}
+        onChange={e=>onChange(+e.target.value)} style={{width:"100%"}}/>
+      {note&&<div style={{fontFamily:FM,fontSize:7,color:T.textDim,marginTop:2}}>{note}</div>}
+    </div>
+  );
+  const Toggle=({label,value,onChange,note,color=T.amber})=>(
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+      marginBottom:8,padding:"5px 8px",background:T.bg2,borderRadius:2,
+      border:`1px solid ${value?color:T.line}`}}>
+      <div>
+        <div style={{fontFamily:FC,fontSize:9,color:value?color:T.textMid}}>{label}</div>
+        {note&&<div style={{fontFamily:FM,fontSize:7,color:T.textDim}}>{note}</div>}
+      </div>
+      <button onClick={()=>onChange(!value)} style={{
+        fontFamily:FM,fontSize:10,fontWeight:700,cursor:"pointer",
+        border:`1px solid ${value?color:T.line2}`,
+        background:value?`${color}28`:T.bg3,
+        color:value?color:T.textDim,borderRadius:2,padding:"3px 10px",
+      }}>{value?"ON":"OFF"}</button>
+    </div>
+  );
+
+  const hh_live_approx = 3.52; // shown for reference in SPA breakdown
+  const acqDemo = (hh_live_approx * params.spaSlope + params.sTolling + params.sLiquefaction).toFixed(3);
+
+  return(
+    <>
+      <button onClick={onToggle} style={{
+        position:"fixed",left:isOpen?284:0,top:"50%",transform:"translateY(-50%)",
+        zIndex:1001,background:T.bg2,border:`1px solid ${T.line2}`,
+        color:T.purple,cursor:"pointer",padding:"12px 5px",
+        borderRadius:"0 4px 4px 0",fontFamily:FM,fontSize:12,
+        transition:"left 0.26s cubic-bezier(.4,0,.2,1)",lineHeight:1,
+        boxShadow:"4px 0 16px rgba(0,0,0,.6)",
+      }}>{isOpen?"◀":"▶"}</button>
+
+      <div style={{
+        position:"fixed",left:0,top:0,bottom:0,width:284,
+        background:T.bg0,borderRight:`1px solid ${T.line2}`,
+        overflowY:"auto",padding:"12px 13px",zIndex:1000,
+        boxShadow:"10px 0 40px rgba(0,0,0,.7)",
+        transform:isOpen?"translateX(0)":"translateX(-100%)",
+        transition:"transform 0.26s cubic-bezier(.4,0,.2,1)",
+      }}>
+        <div style={{fontFamily:FC,fontSize:14,fontWeight:800,color:T.purple,
+          letterSpacing:"0.08em",marginBottom:12,paddingBottom:7,
+          borderBottom:`1px solid ${T.line2}`,display:"flex",
+          justifyContent:"space-between",alignItems:"center"}}>
+          ⚙ SCENARIO EDITOR
+          <span style={{fontFamily:FM,fontSize:7.5,color:T.textDim}}>v5.0 Trader Ed.</span>
+        </div>
+
+        {/* FIX#1 — SPA Contract Pricing */}
+        <Sec title="SPA Contract — Acquisition Cost" accent={T.red}
+          sub={`Real cost ≠ HH_spot\nFormula: HH×slope + tolling + liquefaction\n→ Current: $${acqDemo}/MMBtu`}>
+          <Param label="HH SLOPE" value={params.spaSlope} min={1.00} max={1.30} step={0.005}
+            onChange={v=>onUpdate("spaSlope",v)} unit="×HH" prec={3} color={T.red}
+            note="Typical SPA: 110-115% of HH"/>
+          <Param label="TOLLING FEE" value={params.sTolling} min={1.00} max={5.00} step={0.05}
+            onChange={v=>onUpdate("sTolling",v)} unit="$/MMBtu" prec={2} color={T.amber}
+            note="Sabine Pass / Freeport tolling fee"/>
+          <Param label="LIQUEFACTION" value={params.sLiquefaction} min={0.05} max={1.00} step={0.05}
+            onChange={v=>onUpdate("sLiquefaction",v)} unit="$/MMBtu" prec={2} color={T.amberDim}
+            note="Loading & liquefaction overhead"/>
+        </Sec>
+
+        {/* FIX#2 — Heel & FIX#3 Sea State */}
+        <Sec title="Vessel & Sea State" accent={T.cyan}>
+          <Param label="CAPACITY" value={params.capacityM3} min={140000} max={210000} step={1000}
+            onChange={v=>onUpdate("capacityM3",v)} unit="m³" prec={0}
+            note="Q-Flex 174k · Q-Max 210k"/>
+          <Param label="HEEL (cooldown)" value={params.heelM3} min={500} max={4000} step={100}
+            onChange={v=>onUpdate("heelM3",v)} unit="m³" prec={0} color={T.textMid}
+            note={`Non-tradeable: ${(params.heelM3*LNG_DENSITY*LNG_MMBTU_TON/1e3).toFixed(0)}k MMBtu locked`}/>
+          <Param label="BOIL-OFF RATE" value={params.borRate} min={0.05} max={0.30} step={0.01}
+            onChange={v=>onUpdate("borRate",v)} unit="%/day" prec={2} color={T.amber}
+            note="Shipyard spec (calm sea / nominal)"/>
+          <Param label="CRUISE SPEED" value={params.speedKnots} min={14} max={22} step={0.5}
+            onChange={v=>onUpdate("speedKnots",v)} unit="kn" prec={1}
+            note={`EU: ${travelDays(NM.EU,params.speedKnots).toFixed(1)}d laden`}/>
+          {/* Sea State selector — FIX#3 */}
+          <div style={{marginBottom:9}}>
+            <div style={{fontFamily:FC,fontSize:9,color:T.textMid,
+              letterSpacing:"0.1em",marginBottom:4}}>SEA STATE — BOR MULTIPLIER</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:3}}>
+              {Object.entries(SEA_STATE).map(([k,s])=>{
+                const active=params.seaState===k;
+                return(
+                  <button key={k} onClick={()=>onUpdate("seaState",k)} style={{
+                    fontFamily:FC,fontSize:9,fontWeight:700,cursor:"pointer",
+                    borderRadius:2,padding:"5px 6px",textAlign:"left",
+                    border:`1px solid ${active?(k==="storm"?T.red:k==="rough"?T.amber:T.cyan):T.line}`,
+                    background:active?`${k==="storm"?T.red:k==="rough"?T.amber:T.cyan}20`:T.bg2,
+                    color:active?T.text:T.textDim,transition:"all .12s",
+                  }}>
+                    <div style={{letterSpacing:"0.1em"}}>{s.label}</div>
+                    <div style={{fontFamily:FM,fontSize:7,color:T.textDim,fontWeight:400}}>
+                      ×{s.mult.toFixed(2)} BOR · {s.desc}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </Sec>
+
+        {/* FIX#4 — Ballast Days */}
+        <Sec title="Charter — Full Voyage Cost" accent={T.amber}
+          sub={`Total charter = laden + ballast return\nAt ×${params.ballastFactor}: EU voyage = ${(travelDays(NM.EU,params.speedKnots)*(1+params.ballastFactor)).toFixed(1)}d total`}>
+          <Param label="CHARTER RATE" value={params.charterRate} min={40000} max={500000} step={5000}
+            onChange={v=>onUpdate("charterRate",v)} unit="$/day" prec={0} color={T.green}
+            note="Spot: check Baltic LNG Index"/>
+          <Param label="BALLAST FACTOR" value={params.ballastFactor} min={0.50} max={1.20} step={0.05}
+            onChange={v=>onUpdate("ballastFactor",v)} unit="× laden" prec={2} color={T.amber}
+            note={`Ballast EU: ${(travelDays(NM.EU,params.speedKnots)*params.ballastFactor).toFixed(1)}d · AP: ${(travelDays(NM.AP_SUEZ,params.speedKnots)*params.ballastFactor).toFixed(1)}d`}/>
+        </Sec>
+
+        {/* Routing */}
+        <Sec title="Routing — Suez vs Cape" accent={T.amberDim}>
+          <Toggle label="USE CAPE OF GOOD HOPE" value={params.useCape}
+            onChange={v=>onUpdate("useCape",v)}
+            note={`+${(NM.AP_CAPE-NM.AP_SUEZ).toLocaleString()}nm · +${(travelDays(NM.AP_CAPE,params.speedKnots)-travelDays(NM.AP_SUEZ,params.speedKnots)).toFixed(1)}d · no canal fee`}/>
+          <Toggle label="SUEZ WAR RISK ACTIVE" value={params.suezWarActive}
+            onChange={v=>onUpdate("suezWarActive",v)} color={T.red}
+            note={`+${fDol(params.warRiskSuez)} surcharge per voyage`}/>
+          <Param label="SUEZ CANAL FEE" value={params.canalAP} min={0} max={1200000} step={10000}
+            onChange={v=>onUpdate("canalAP",v)} unit="$" prec={0} color={T.amber}/>
+          <Param label="WAR RISK $" value={params.warRiskSuez} min={0} max={1000000} step={25000}
+            onChange={v=>onUpdate("warRiskSuez",v)} unit="$" prec={0} color={T.red}/>
+          <Param label="DIVERSION PENALTY" value={params.diversionPenalty} min={0} max={3000000} step={50000}
+            onChange={v=>onUpdate("diversionPenalty",v)} unit="$" prec={0} color={T.amber}/>
+        </Sec>
+
+        {/* Regasification */}
+        <Sec title="Terminal Fees" accent={T.amberDim}>
+          <Param label="PORT ORIGIN" value={params.portOrigin} min={100000} max={600000} step={5000}
+            onChange={v=>onUpdate("portOrigin",v)} unit="$" prec={0} color={T.textMid} note="Sabine Pass / Freeport"/>
+          <Param label="PORT DEST" value={params.portDest} min={100000} max={700000} step={5000}
+            onChange={v=>onUpdate("portDest",v)} unit="$" prec={0} color={T.textMid} note="Rotterdam / Tokyo"/>
+          <Param label="REGAS FEE (EU)" value={params.regasFeeEU} min={0.10} max={0.80} step={0.01}
+            onChange={v=>onUpdate("regasFeeEU",v)} unit="$/MMBtu" prec={2} note="Gate terminal / Rotterdam"/>
+          <Param label="REGAS FEE (AP)" value={params.regasFeeAP} min={0.10} max={0.80} step={0.01}
+            onChange={v=>onUpdate("regasFeeAP",v)} unit="$/MMBtu" prec={2} color={T.amber} note="Tokyo Gas / Sodegaura"/>
+        </Sec>
+
+        {/* FIX#7 — B/L Price Lock */}
+        <Sec title="Cargo Position — B/L Price Lock" accent={T.purple}
+          sub={"Lock sell price at B/L date.\nWhen active: revenue uses fixed price,\nnot live market."}>
+          <Toggle label="B/L PRICE LOCK" value={params.blPriceLocked}
+            onChange={v=>onUpdate("blPriceLocked",v)} color={T.purple}
+            note="Activates fixed-price revenue calculation"/>
+          {params.blPriceLocked && (
+            <>
+              <Param label="B/L PRICE EU" value={params.blPriceEU||10} min={3} max={40} step={0.10}
+                onChange={v=>onUpdate("blPriceEU",v)} unit="$/MMBtu" prec={2} color={T.purple}
+                note="Fixed EU sell price at B/L"/>
+              <Param label="B/L PRICE AP" value={params.blPriceAP||12} min={3} max={50} step={0.10}
+                onChange={v=>onUpdate("blPriceAP",v)} unit="$/MMBtu" prec={2} color={T.purple}
+                note="Fixed AP sell price at B/L"/>
+            </>
+          )}
+        </Sec>
+
+        {/* Stochastic */}
+        <Sec title="Jump Diffusion — Merton 1976" accent={T.red}>
+          <div style={{fontFamily:FM,fontSize:7.5,color:T.textDim,marginBottom:8,
+            background:T.bg2,padding:"6px 8px",borderRadius:2,
+            borderLeft:`2px solid ${T.red}`,lineHeight:1.7}}>
+            dS = OU(κ,μ,σ)·dt + J·dN(λ)<br/>
+            Hawkes: P(J_JKM|J_TTF) += 60%<br/>
+            Suez: stochastic delay LogNormal(0,0.8)
+          </div>
+          <Param label="JUMP INTENSITY λ" value={params.lambdaJump} min={0} max={4} step={0.1}
+            onChange={v=>onUpdate("lambdaJump",v)} unit="/yr" prec={1} color={T.red}/>
+          <Param label="JUMP SIZE σ_J" value={params.sigmaJump} min={0.05} max={1.0} step={0.05}
+            onChange={v=>onUpdate("sigmaJump",v)} unit="(σ log)" prec={2} color={T.redDim}
+            note="0.30=moderate · 0.60=severe"/>
+        </Sec>
+
+        <button onClick={()=>onUpdate("__RESET__",null)} style={{
+          width:"100%",fontFamily:FC,fontSize:10,fontWeight:700,
+          letterSpacing:"0.14em",color:T.textMid,background:"transparent",
+          border:`1px solid ${T.line2}`,borderRadius:2,padding:"7px",
+          cursor:"pointer",textTransform:"uppercase",
+        }}>↺ RESET ALL DEFAULTS</button>
+      </div>
+    </>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   TORNADO CHART — Sensitivity ±1%
+════════════════════════════════════════════════════════════════════════ */
+function TornadoChart({data}){
+  if(!data?.length)return null;
+  return(
+    <ResponsiveContainer width="100%" height={158}>
+      <BarChart data={data} layout="vertical"
+        margin={{top:2,right:28,bottom:0,left:90}}>
+        <CartesianGrid stroke={T.line} strokeDasharray="2 4" horizontal={false}/>
+        <XAxis type="number"
+          tick={{fill:T.textDim,fontSize:7,fontFamily:FM}}
+          tickFormatter={v=>`${v>0?"+":""}${v.toFixed(1)}%`}
+          domain={["dataMin - 0.5","dataMax + 0.5"]}/>
+        <YAxis type="category" dataKey="subject" width={88}
+          tick={{fill:T.textMid,fontSize:8,fontFamily:FC,fontWeight:700}}/>
+        <ReferenceLine x={0} stroke="rgba(255,255,255,0.2)" strokeDasharray="3 2"/>
+        <Tooltip content={<Tip pre="" dec={2}/>}/>
+        <Bar dataKey="upside"   name="+1% Δ%" fill={`${T.green}BB`} isAnimationActive={false} radius={[0,2,2,0]}/>
+        <Bar dataKey="downside" name="-1% Δ%" fill={`${T.red}BB`}   isAnimationActive={false} radius={[0,2,2,0]}/>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   MAIN DASHBOARD — LNG FRONTIER OPTIMIZER v5.0 TRADER EDITION
+════════════════════════════════════════════════════════════════════════ */
+export default function LNGDashboard(){
+  const [params,      setParams]      = useState(DP);
+  const [px,          setPx]          = useState({hh:3.52,ttf:29.50,jkm:14.98,eurUsd:1.085,usdJpy:149.5});
+  const [prevPx,      setPrevPx]      = useState(null);
+  const [history,     setHistory]     = useState([]);
+  const [marginH,     setMarginH]     = useState([]); // margin $/MMBtu history (FIX#9)
+  const [spreadH,     setSpreadH]     = useState([]);
+  const [mc,          setMc]          = useState(null);
+  const [volMode,     setVolMode]     = useState("normal");
+  const [isLive,      setIsLive]      = useState(true);
+  const [tick,        setTick]        = useState(0);
+  const [fxOk,        setFxOk]        = useState(false);
+  const [fxAge,       setFxAge]       = useState(0);
+  const [stressMode,  setStressMode]  = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const tickRef=useRef(0), intRef=useRef(null);
+
+  const updateParam=useCallback((key,val)=>{
+    if(key==="__RESET__"){setParams(DP);return;}
+    setParams(p=>({...p,[key]:val}));
+  },[]);
+
+  // Apply stress multipliers non-destructively on top of live prices
+  const spx=useMemo(()=>{
+    if(!stressMode)return px;
+    const s=SS[stressMode];
+    return{...px,hh:px.hh*s.mHH,ttf:px.ttf*s.mTTF,jkm:px.jkm*s.mJKM};
+  },[px,stressMode]);
+
+  /* ── BCE FX every 60s ─────────────────────────────────────────── */
   useEffect(()=>{
-    let ageTimer;
+    let ageT;
     async function doFX(){
-      const r = await fetchFX();
+      const r=await fetchFX();
       if(r){
-        setPx(p=>({...p, eurUsd:r.eurUsd, usdJpy:r.usdJpy}));
-        setFxOk(true); setFxAge(0);
-        clearInterval(ageTimer);
-        ageTimer=setInterval(()=>setFxAge(a=>a+1),1000);
+        setPx(p=>({...p,eurUsd:r.eurUsd,usdJpy:r.usdJpy}));
+        setFxOk(true);setFxAge(0);
+        clearInterval(ageT);
+        ageT=setInterval(()=>setFxAge(a=>a+1),1000);
       }
     }
     doFX();
     const fxId=setInterval(doFX,60_000);
-    ageTimer=setInterval(()=>setFxAge(a=>a+1),1000);
-    return ()=>{ clearInterval(fxId); clearInterval(ageTimer); };
+    ageT=setInterval(()=>setFxAge(a=>a+1),1000);
+    return()=>{clearInterval(fxId);clearInterval(ageT);};
   },[]);
 
-  /* ── Seed history ───────────────────────────────────────────────────── */
+  /* ── Seed historical data ─────────────────────────────────────── */
   useEffect(()=>{
     const vols=VOL_PRESETS.normal;
     let s={hh:3.52,ttf:29.50,jkm:14.98,eurUsd:1.085,usdJpy:149.5};
-    const h=[],sh=[],ph=[];
+    const h=[],mh=[],sh=[];
     for(let i=85;i>=0;i--){
       const ns=ouStep(s,vols,1/365/24);
       s={...ns,eurUsd:s.eurUsd,usdJpy:s.usdJpy};
       const ttfU=ttfToUsd(s.ttf,s.eurUsd);
-      const t=new Date(Date.now()-i*2000).toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+      const t=new Date(Date.now()-i*2000)
+        .toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
       h.push({t,hh:s.hh,ttf:ttfU,jkm:s.jkm});
       sh.push({t,eu:ttfU-s.hh,ap:s.jkm-s.hh});
-      const pE=calcProfit(s.hh,ttfU,85_000,ROUTES[0]);
-      const pA=calcProfit(s.hh,s.jkm,85_000,ROUTES[1]);
-      ph.push({t,eu:pE.profit/1e6,ap:pA.profit/1e6});
+      const pE=calcProfit(s.hh,ttfU, DP,"EU");
+      const pA=calcProfit(s.hh,s.jkm,DP,"AP");
+      mh.push({t,eu:pE.marginPerMmbtu,ap:pA.marginPerMmbtu}); // FIX#9 — margin not profit
     }
-    setHistory(h); setSpreadH(sh); setProfitH(ph);
+    setHistory(h);setSpreadH(sh);setMarginH(mh);
     setPx(p=>({...p,hh:s.hh,ttf:s.ttf,jkm:s.jkm}));
-    setMc(runMC(s.hh,ttfToUsd(s.ttf,s.eurUsd),s.jkm,85_000,VOL_PRESETS.normal));
+    setMc(runMCAdvanced(s.hh,ttfToUsd(s.ttf,1.085),s.jkm,DP,vols));
   },[]);
 
-  /* ── Tick Engine ────────────────────────────────────────────────────── */
+  /* ── Tick Engine ──────────────────────────────────────────────── */
   const doTick=useCallback(()=>{
     const vols=VOL_PRESETS[volMode];
     setPx(prev=>{
       setPrevPx({...prev});
       const ns=ouStep(prev,vols,1/365/24);
-      ns.eurUsd=prev.eurUsd; ns.usdJpy=prev.usdJpy;
+      ns.eurUsd=prev.eurUsd;ns.usdJpy=prev.usdJpy;
       const ttfU=ttfToUsd(ns.ttf,ns.eurUsd);
       const now=ts();
       setHistory(h=>[...h.slice(-89),{t:now,hh:ns.hh,ttf:ttfU,jkm:ns.jkm}]);
       setSpreadH(h=>[...h.slice(-89),{t:now,eu:ttfU-ns.hh,ap:ns.jkm-ns.hh}]);
-      const pE=calcProfit(ns.hh,ttfU,charter,ROUTES[0]);
-      const pA=calcProfit(ns.hh,ns.jkm,charter,ROUTES[1]);
-      setProfitH(h=>[...h.slice(-89),{t:now,eu:pE.profit/1e6,ap:pA.profit/1e6}]);
+      const pE=calcProfit(ns.hh,ttfU, params,"EU");
+      const pA=calcProfit(ns.hh,ns.jkm,params,"AP");
+      setMarginH(h=>[...h.slice(-89),{t:now,eu:pE.marginPerMmbtu,ap:pA.marginPerMmbtu}]);
       tickRef.current++;
       if(tickRef.current%8===0)
-        setMc(runMC(ns.hh,ttfU,ns.jkm,charter,vols));
+        setMc(runMCAdvanced(ns.hh,ttfU,ns.jkm,params,vols,stressMode));
       setTick(tickRef.current);
       return ns;
     });
-  },[volMode,charter]);
+  },[volMode,params,stressMode]);
 
   useEffect(()=>{
-    if(isLive){ intervalRef.current=setInterval(doTick,2000); }
-    else { clearInterval(intervalRef.current); }
-    return ()=>clearInterval(intervalRef.current);
+    if(isLive){intRef.current=setInterval(doTick,2000);}
+    else clearInterval(intRef.current);
+    return()=>clearInterval(intRef.current);
   },[isLive,doTick]);
 
-  /* ── Derived values ─────────────────────────────────────────────────── */
-  const ttfUsd    = ttfToUsd(px.ttf,px.eurUsd);
-  const pEu       = calcProfit(px.hh,ttfUsd,charter,ROUTES[0]);
-  const pAp       = calcProfit(px.hh,px.jkm,charter,ROUTES[1]);
-  const optimal   = pEu.profit>=pAp.profit?{r:ROUTES[0],p:pEu}:{r:ROUTES[1],p:pAp};
-  const spreadEu  = ttfUsd-px.hh;
-  const spreadAp  = px.jkm-px.hh;
+  /* ── Derived values ───────────────────────────────────────────── */
+  const ttfUsd    = ttfToUsd(spx.ttf,spx.eurUsd);
+  const pEu       = calcProfit(spx.hh,ttfUsd,  params,"EU");
+  const pAp       = calcProfit(spx.hh,spx.jkm, params,"AP");
+  const spreadEu  = ttfUsd-spx.hh;
+  const spreadAp  = spx.jkm-spx.hh;
   const prevTtfUsd= prevPx?ttfToUsd(prevPx.ttf,prevPx.eurUsd):ttfUsd;
 
-  /* ── Sensitività ────────────────────────────────────────────────────── */
+  const rawOptId  = pEu.marginTotal>=pAp.marginTotal?"EU":"AP";
+  const riskOptId = (mc?.eu?.sharpe??0)>=(mc?.ap?.sharpe??0)?"EU":"AP";
+  const conflict  = rawOptId!==riskOptId;
+  const optimal   = rawOptId==="EU"
+    ?{id:"EU",label:"Europa",  dest:"TTF",p:pEu}
+    :{id:"AP",label:"Asia-Pac",dest:"JKM",p:pAp};
+
+  const rte=useMemo(()=>calcRouteBreakeven(spx.hh,spx.jkm,params),[spx.hh,spx.jkm,params]);
+  const div=useMemo(()=>calcCargoDiversion(spx.hh,ttfUsd,spx.jkm,params,0.5),[spx.hh,ttfUsd,spx.jkm,params]);
+
   const sensi=useMemo(()=>
     Array.from({length:22},(_,i)=>{
-      const cr=40_000+i*5_000, td=travelDays(ROUTES[0].nm);
-      return {cr:cr/1000, p:(pEu.profit-(cr-charter)*td)/1e6};
-    }),[pEu.profit,charter]);
+      const cr=40_000+i*5_000;
+      const res=calcProfit(spx.hh,ttfUsd,{...params,charterRate:cr},"EU");
+      return{cr:cr/1000,margin:res.marginPerMmbtu,profit:res.profit/1e6};
+    }),[spx.hh,ttfUsd,params]);
 
-  /* ── Boil-off ───────────────────────────────────────────────────────── */
-  const boiloff=Array.from({length:30},(_,i)=>({
+  const spider=useMemo(()=>calcSpider(params,spx.hh,ttfUsd,spx.jkm),[params,spx.hh,spx.jkm,ttfUsd]);
+
+  const boiloff=useMemo(()=>Array.from({length:30},(_,i)=>({
     d:i+1,
-    lo:Math.pow(1-0.001,i+1)*100,
+    lo:Math.pow(1-0.001, i+1)*100,
     nm:Math.pow(1-0.0015,i+1)*100,
-    hi:Math.pow(1-0.002,i+1)*100,
-  }));
+    hi:Math.pow(1-0.002, i+1)*100,
+  })),[]);
 
-  /* ── Forward Curve (OU proiezione) ─────────────────────────────────── */
   const fwd=useMemo(()=>Array.from({length:12},(_,i)=>{
     const t=(i+1)/12;
-    return {
+    return{
       m:`M${i+1}`,
-      hh:  px.hh  +(MU.hh -px.hh )*OU_KAPPA*t+randn()*0.02,
-      ttf: ttfUsd +(MU.ttf/3.41214-ttfUsd)*(OU_KAPPA*t*0.4)+randn()*0.12,
-      jkm: px.jkm +(MU.jkm-px.jkm)*OU_KAPPA*t+randn()*0.08,
+      hh:  spx.hh  +(MU.hh -spx.hh )*OU_KAPPA*t+randn()*0.02,
+      ttf: ttfUsd  +(MU.ttf/3.41214-ttfUsd)*(OU_KAPPA*t*0.4)+randn()*0.12,
+      jkm: spx.jkm +(MU.jkm-spx.jkm)*OU_KAPPA*t+randn()*0.08,
     };
-  }),[px.hh,px.ttf,px.jkm,px.eurUsd]);
+  }),[spx.hh,spx.ttf,spx.jkm,spx.eurUsd]);
 
-  const fwdSlope=fwd.length>1?fwd[fwd.length-1].ttf-fwd[0].ttf:0;
+  const fwdSlope=fwd.length>1?fwd[11].ttf-fwd[0].ttf:0;
   const curveLbl=fwdSlope>0.5?"CONTANGO":fwdSlope<-0.5?"BACKWARDATION":"FLAT";
   const curveCol=curveLbl==="CONTANGO"?T.amber:curveLbl==="BACKWARDATION"?T.green:T.textMid;
 
-  /* ── Waterfall ───────────────────────────────────────────────────────── */
+  // Waterfall — updated cost labels to reflect real cost structure
   const wf=[
-    {n:"Supply",  v:-(pEu.supply/1e6),  fill:T.redDim},
-    {n:"Charter", v:-(pEu.charter/1e6), fill:T.red},
-    {n:"Fuel",    v:-(pEu.fuel/1e6),    fill:"#FF6060"},
-    {n:"Regas",   v:-(pEu.regas/1e6),   fill:"#E05000"},
-    {n:"Ports",   v:-(pEu.ports/1e6),   fill:"#A03000"},
-    {n:"Revenue", v: pEu.revenue/1e6,   fill:T.cyan},
-    {n:"PROFIT",  v: pEu.profit/1e6,    fill:pEu.profit>0?T.green:T.red},
+    {n:"Acq.(SPA)",v:-(pEu.supply/1e6),    fill:T.redDim},
+    {n:"Charter",  v:-(pEu.charter/1e6),   fill:T.amber},
+    {n:"Fuel",     v:-(pEu.fuel/1e6),      fill:T.amberDim},
+    {n:"Regas",    v:-(pEu.regas/1e6),     fill:"#9B6020"},
+    {n:"Ports",    v:-(pEu.ports/1e6),     fill:T.textDim},
+    {n:"Revenue",  v: pEu.revenue/1e6,     fill:T.cyan},
+    {n:"MARGIN",   v: pEu.profit/1e6,      fill:pEu.profit>0?T.green:T.red},
   ];
 
-  /* ═══════════════════════════════════════════════════════════════════
-     RENDER
-  ═════════════════════════════════════════════════════════════════════ */
-  return (
-    <div style={{background:T.bg0,minHeight:"100vh",color:T.text,
-      fontFamily:FONT_MONO,padding:"12px 16px",boxSizing:"border-box"}}>
+  const stressActive=stressMode&&SS[stressMode];
 
+  /* ═══ RENDER ══════════════════════════════════════════════════════ */
+  return(
+    <div style={{width:"100%",minHeight:"100vh",background:T.bg0,color:T.text,
+      fontFamily:FM,overflowX:"hidden"}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Barlow+Condensed:wght@400;600;700;800&display=swap');
-        *{box-sizing:border-box}
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+        html,body,#root{width:100%;overflow-x:hidden}
         ::-webkit-scrollbar{width:4px;height:4px}
         ::-webkit-scrollbar-track{background:${T.bg0}}
         ::-webkit-scrollbar-thumb{background:${T.line2};border-radius:2px}
-        .ctrl{cursor:pointer;border:1px solid ${T.line2};border-radius:2px;padding:4px 11px;
-          font-family:${FONT_COND};font-size:11px;font-weight:700;letter-spacing:0.1em;
-          background:transparent;transition:all .1s;text-transform:uppercase;color:${T.textMid}}
+        .ctrl{cursor:pointer;border:1px solid ${T.line2};border-radius:2px;padding:4px 10px;
+          font-family:${FC};font-size:11px;font-weight:700;letter-spacing:0.1em;
+          background:transparent;transition:all .12s;text-transform:uppercase;color:${T.textMid}}
         .ctrl:hover{background:${T.bg3};border-color:${T.cyan};color:${T.cyan}}
         .ctrl.active{background:${T.bg2};border-color:${T.cyan};color:${T.cyan}}
-        .live-dot{animation:lp 1.6s ease-in-out infinite}
-        @keyframes lp{0%,100%{opacity:1;box-shadow:0 0 5px ${T.green}}50%{opacity:.2;box-shadow:none}}
+        .ldot{animation:lp 1.6s ease-in-out infinite}
+        @keyframes lp{0%,100%{opacity:1;box-shadow:0 0 6px ${T.green}}50%{opacity:.2;box-shadow:none}}
         input[type=range]{-webkit-appearance:none;height:3px;border-radius:2px;
           background:${T.line2};outline:none;cursor:pointer;width:100%}
-        input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;
+        input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:11px;height:11px;
           border-radius:50%;background:${T.cyan};cursor:pointer;border:2px solid ${T.bg0}}
       `}</style>
 
-      {/* ══ TOP BAR ══════════════════════════════════════════════════ */}
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-        marginBottom:12,paddingBottom:10,borderBottom:`1px solid ${T.line2}`}}>
-        <div>
-          <div style={{fontFamily:FONT_COND,fontWeight:800,fontSize:22,
-            color:T.cyan,letterSpacing:"0.03em",lineHeight:1}}>
-            LNG ARBITRAGE
-            <span style={{color:T.textMid,fontSize:13,fontWeight:400,marginLeft:10,
-              letterSpacing:"0.1em"}}>& FLOW ANALYZER  v2.0</span>
+      <Sidebar params={params} onUpdate={updateParam} isOpen={sidebarOpen}
+        onToggle={()=>setSidebarOpen(o=>!o)}/>
+
+      <div style={{width:"100%",padding:"10px 13px"}}>
+
+        {/* ── TOP BAR ───────────────────────────────────────────── */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+          marginBottom:8,paddingBottom:8,borderBottom:`1px solid ${T.line2}`,flexWrap:"wrap",gap:5}}>
+          <div>
+            <div style={{fontFamily:FC,fontWeight:800,fontSize:20,color:T.cyan,
+              letterSpacing:"0.03em",lineHeight:1,display:"flex",alignItems:"baseline",gap:9}}>
+              LNG FRONTIER OPTIMIZER
+              <span style={{fontFamily:FM,fontSize:8,color:T.red,
+                background:`${T.red}18`,border:`1px solid ${T.red}44`,
+                padding:"2px 7px",borderRadius:2,letterSpacing:"0.12em"}}>
+                TRADER EDITION v5.0
+              </span>
+              {stressActive&&(
+                <span style={{fontFamily:FM,fontSize:8,color:stressActive.color,
+                  background:`${stressActive.color}20`,border:`1px solid ${stressActive.color}`,
+                  padding:"2px 8px",borderRadius:2,animation:"lp 1.2s infinite"}}>
+                  {stressActive.icon} {stressActive.label}
+                </span>
+              )}
+              {params.blPriceLocked&&(
+                <span style={{fontFamily:FM,fontSize:8,color:T.purple,
+                  background:`${T.purple}20`,border:`1px solid ${T.purple}`,
+                  padding:"2px 8px",borderRadius:2}}>
+                  🔒 B/L LOCKED
+                </span>
+              )}
+            </div>
+            <div style={{fontFamily:FC,fontSize:10,color:T.textMid,letterSpacing:"0.1em",marginTop:2}}>
+              Henry Hub (USA) ↔ TTF (Europa) ↔ JKM (Asia-Pacific)
+              <span style={{marginLeft:10,color:T.textDim}}>
+                SPA acq: ${pEu.acqPerMmbtu.toFixed(2)}/MMBtu · BEP EU: ${pEu.breakEvenDest.toFixed(2)} · BEP AP: ${pAp.breakEvenDest.toFixed(2)} · Sea: {SEA_STATE[params.seaState]?.label} ×{SEA_STATE[params.seaState]?.mult}
+              </span>
+            </div>
           </div>
-          <div style={{fontFamily:FONT_COND,fontSize:11,color:T.textMid,letterSpacing:"0.1em",marginTop:2}}>
-            Henry Hub (USA)  ↔  TTF (Europa)  ↔  JKM (Asia-Pacific)
-            <span style={{marginLeft:16,color:T.textDim}}>
-              OU κ=0.15  ·  Cholesky ρ[HH/TTF=0.65, HH/JKM=0.55, TTF/JKM=0.70]
-            </span>
-          </div>
-        </div>
-        <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap",justifyContent:"flex-end"}}>
-          {/* FX status */}
-          <div style={{fontFamily:FONT_MONO,fontSize:9,color:T.textMid,
-            background:T.bg2,border:`1px solid ${T.line}`,padding:"4px 9px",borderRadius:2,
-            display:"flex",alignItems:"center",gap:5}}>
-            <span style={{color:fxOk&&fxAge<90?T.green:T.amber,fontSize:10}}>●</span>
-            FX BCE {fxOk?`${fxAge}s ago`:"fallback"}
-          </div>
-          {/* Vol mode */}
-          <div style={{display:"flex",gap:4}}>
+          <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
+            <div style={{fontFamily:FM,fontSize:9,color:T.textMid,background:T.bg2,
+              border:`1px solid ${T.line}`,padding:"3px 8px",borderRadius:2,
+              display:"flex",alignItems:"center",gap:4}}>
+              <span style={{color:fxOk&&fxAge<90?T.green:T.amber,fontSize:10}}>●</span>
+              FX BCE {fxOk?`${fxAge}s`:"fallback"}
+            </div>
             {["low","normal","high"].map(v=>(
               <button key={v} className={`ctrl ${volMode===v?"active":""}`}
                 onClick={()=>setVolMode(v)}>σ {v}</button>
             ))}
-          </div>
-          <button className="ctrl" onClick={()=>setIsLive(l=>!l)}
-            style={{color:isLive?T.red:T.green,borderColor:isLive?T.red:T.green,
-              background:isLive?`${T.red}12`:`${T.green}12`}}>
-            {isLive?"⏸ STOP":"▶ LIVE"}
-          </button>
-          <div style={{display:"flex",alignItems:"center",gap:5,
-            fontFamily:FONT_MONO,fontSize:10,color:T.textMid}}>
-            <div className={isLive?"live-dot":""} style={{width:6,height:6,
-              borderRadius:"50%",background:isLive?T.green:T.textDim}} />
-            {isLive?"LIVE":"PAUSED"}  ·  tick #{tick}
+            <button className="ctrl" onClick={()=>setSidebarOpen(o=>!o)}
+              style={{color:T.purple,borderColor:T.purple,background:`${T.purple}10`}}>
+              ⚙ PARAMS
+            </button>
+            <button className="ctrl" onClick={()=>setIsLive(l=>!l)}
+              style={{color:isLive?T.red:T.green,borderColor:isLive?T.red:T.green,
+                background:isLive?`${T.red}10`:`${T.green}10`}}>
+              {isLive?"⏸ STOP":"▶ LIVE"}
+            </button>
+            <div style={{display:"flex",alignItems:"center",gap:4,
+              fontFamily:FM,fontSize:10,color:T.textMid}}>
+              <div className={isLive?"ldot":""} style={{width:6,height:6,borderRadius:"50%",
+                background:isLive?T.green:T.textDim}}/>
+              {isLive?"LIVE":"PAUSED"} · #{tick}
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* ══ TICKER STRIP ═════════════════════════════════════════════ */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:7,marginBottom:9}}>
-        <Ticker label="HENRY HUB"   value={f3(px.hh)}    delta={px.hh-(prevPx?.hh??px.hh)}               unit="$/MMBtu"  color={T.green}/>
-        <Ticker label="TTF"         value={f3(px.ttf)}   delta={px.ttf-(prevPx?.ttf??px.ttf)}             unit="€/MWh"    color={T.cyan}/>
-        <Ticker label="TTF (USD)"   value={f3(ttfUsd)}   delta={ttfUsd-prevTtfUsd}                        unit="$/MMBtu"  color={T.cyan}/>
-        <Ticker label="JKM"         value={f3(px.jkm)}   delta={px.jkm-(prevPx?.jkm??px.jkm)}             unit="$/MMBtu"  color={T.amber}/>
-        <Ticker label="EUR/USD"     value={f3(px.eurUsd)}delta={px.eurUsd-(prevPx?.eurUsd??px.eurUsd)}     unit=""         color={T.purple}/>
-        <Ticker label="SPREAD EU"   value={f3(spreadEu)} delta={spreadEu-(ttfToUsd(prevPx?.ttf??px.ttf,px.eurUsd)-(prevPx?.hh??px.hh))} unit="$/MMBtu" color={spreadEu>0?T.green:T.red}/>
-        <Ticker label="SPREAD APAC" value={f3(spreadAp)} delta={spreadAp-((prevPx?.jkm??px.jkm)-(prevPx?.hh??px.hh))} unit="$/MMBtu" color={spreadAp>0?T.green:T.red}/>
-      </div>
+        {/* ── STRESS PANEL ──────────────────────────────────────── */}
+        <StressPanel stressMode={stressMode} setStressMode={setStressMode}/>
 
-      {/* ══ ROW 2: Prezzi + Spread + Profitti ════════════════════════ */}
-      <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:7,marginBottom:7}}>
-        <Card accent={T.cyan}>
-          <SH label="Prezzi Spot — OU Mean-Reversion" right={`σ=${volMode}  |  ${ts()}`}/>
-          <ResponsiveContainer width="100%" height={172}>
-            <LineChart data={history} margin={{top:2,right:4,bottom:0,left:-20}}>
-              <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
-              <XAxis dataKey="t" tick={{fill:T.textDim,fontSize:8,fontFamily:FONT_MONO}}
-                interval={Math.floor(history.length/5)}/>
-              <YAxis tick={{fill:T.textDim,fontSize:8,fontFamily:FONT_MONO}}/>
-              <Tooltip content={<Tip dec={3}/>}/>
-              <Line dataKey="hh"  name="HH"   stroke={T.green} dot={false} strokeWidth={1.6} isAnimationActive={false}/>
-              <Line dataKey="ttf" name="TTF$" stroke={T.cyan}  dot={false} strokeWidth={1.6} isAnimationActive={false}/>
-              <Line dataKey="jkm" name="JKM"  stroke={T.amber} dot={false} strokeWidth={1.6} isAnimationActive={false}/>
-            </LineChart>
-          </ResponsiveContainer>
-        </Card>
+        {/* ── TICKER STRIP ──────────────────────────────────────── */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:5,marginBottom:6}}>
+          <Ticker label="HENRY HUB"    value={f3(spx.hh)}     delta={spx.hh   -(prevPx?.hh   ??spx.hh)}    unit="$/MMBtu" color={T.green}/>
+          <Ticker label="TTF"          value={f3(spx.ttf)}    delta={spx.ttf  -(prevPx?.ttf  ??spx.ttf)}   unit="€/MWh"   color={T.cyan}/>
+          <Ticker label="TTF (USD)"    value={f3(ttfUsd)}     delta={ttfUsd   -prevTtfUsd}                  unit="$/MMBtu" color={T.cyan}/>
+          <Ticker label="JKM"          value={f3(spx.jkm)}    delta={spx.jkm  -(prevPx?.jkm  ??spx.jkm)}   unit="$/MMBtu" color={T.amber}/>
+          <Ticker label="EUR/USD"      value={f3(spx.eurUsd)} delta={spx.eurUsd-(prevPx?.eurUsd??spx.eurUsd)} unit=""      color={T.purple}/>
+          <Ticker label="MARGIN EU"    value={f2(pEu.marginPerMmbtu)} delta={pEu.marginPerMmbtu-(calcProfit(prevPx?.hh??spx.hh,prevTtfUsd,params,"EU").marginPerMmbtu)} unit="$/MMBtu" color={pEu.marginPerMmbtu>0?T.green:T.red}/>
+          <Ticker label="MARGIN AP"    value={f2(pAp.marginPerMmbtu)} delta={pAp.marginPerMmbtu-(calcProfit(prevPx?.hh??spx.hh,prevPx?.jkm??spx.jkm,params,"AP").marginPerMmbtu)} unit="$/MMBtu" color={pAp.marginPerMmbtu>0?T.green:T.red}/>
+        </div>
 
-        <Card accent={T.green}>
-          <SH label="Spread Arbitrage" right="HH→TTF  /  HH→JKM"/>
-          <ResponsiveContainer width="100%" height={172}>
-            <ComposedChart data={spreadH} margin={{top:2,right:4,bottom:0,left:-22}}>
-              <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
-              <XAxis dataKey="t" tick={{fill:T.textDim,fontSize:7,fontFamily:FONT_MONO}}
-                interval={Math.floor(spreadH.length/4)}/>
-              <YAxis tick={{fill:T.textDim,fontSize:8,fontFamily:FONT_MONO}}
-                tickFormatter={v=>`$${v.toFixed(1)}`}/>
-              <ReferenceLine y={0} stroke="white" strokeDasharray="3 2" strokeOpacity={0.35}/>
-              <Tooltip content={<Tip dec={3}/>}/>
-              <defs>
-                <linearGradient id="gEu" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor={T.cyan} stopOpacity={0.28}/>
-                  <stop offset="95%" stopColor={T.cyan} stopOpacity={0}/>
-                </linearGradient>
-              </defs>
-              <Area dataKey="eu" name="Spread EU" stroke={T.cyan} fill="url(#gEu)"
-                strokeWidth={1.8} dot={false} isAnimationActive={false}/>
-              <Line dataKey="ap" name="Spread AP" stroke={T.amber} dot={false}
-                strokeWidth={1.6} strokeDasharray="4 2" isAnimationActive={false}/>
-            </ComposedChart>
-          </ResponsiveContainer>
-        </Card>
+        {/* ── ROW A: Spot Prices | Spread | Margin Analysis ─────── */}
+        <div style={{display:"grid",gridTemplateColumns:"1.6fr 1fr 1.5fr",gap:5,marginBottom:5}}>
+          <Card accent={T.cyan}>
+            <SH label="Prezzi Spot — OU Mean-Reversion" right={`σ=${volMode}  ·  ${ts()}`}/>
+            <ResponsiveContainer width="100%" height={158}>
+              <LineChart data={history} margin={{top:2,right:4,bottom:0,left:-20}}>
+                <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
+                <XAxis dataKey="t" tick={{fill:T.textDim,fontSize:8,fontFamily:FM}}
+                  interval={Math.floor(history.length/5)}/>
+                <YAxis tick={{fill:T.textDim,fontSize:8,fontFamily:FM}}/>
+                <Tooltip content={<Tip dec={3}/>}/>
+                <Line dataKey="hh"  name="HH"    stroke={T.green} dot={false} strokeWidth={1.6} isAnimationActive={false}/>
+                <Line dataKey="ttf" name="TTF$"  stroke={T.cyan}  dot={false} strokeWidth={1.6} isAnimationActive={false}/>
+                <Line dataKey="jkm" name="JKM"   stroke={T.amber} dot={false} strokeWidth={1.6} isAnimationActive={false}/>
+              </LineChart>
+            </ResponsiveContainer>
+          </Card>
 
-        <Card accent={T.amber}>
-          <SH label="Profitto Netto Live" right="EU  vs  APAC (M$)"/>
-          <ResponsiveContainer width="100%" height={172}>
-            <ComposedChart data={profitH} margin={{top:2,right:4,bottom:0,left:-14}}>
-              <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
-              <XAxis dataKey="t" tick={{fill:T.textDim,fontSize:7,fontFamily:FONT_MONO}}
-                interval={Math.floor(profitH.length/4)}/>
-              <YAxis tick={{fill:T.textDim,fontSize:8,fontFamily:FONT_MONO}}
-                tickFormatter={v=>`${v.toFixed(1)}M`}/>
-              <ReferenceLine y={0} stroke="white" strokeDasharray="3 2" strokeOpacity={0.35}/>
-              <Tooltip content={<Tip pre="" dec={2}/>}/>
-              <defs>
-                <linearGradient id="gP" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor={T.cyan} stopOpacity={0.22}/>
-                  <stop offset="95%" stopColor={T.cyan} stopOpacity={0}/>
-                </linearGradient>
-              </defs>
-              <Area dataKey="eu" name="EU M$" stroke={T.cyan} fill="url(#gP)"
-                strokeWidth={2} dot={false} isAnimationActive={false}/>
-              <Line dataKey="ap" name="AP M$" stroke={T.amber} strokeWidth={2}
-                dot={false} strokeDasharray="4 2" isAnimationActive={false}/>
-            </ComposedChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
+          <Card accent={T.green}>
+            <SH label="Spread Arb." right="HH→TTF / HH→JKM"/>
+            <ResponsiveContainer width="100%" height={158}>
+              <ComposedChart data={spreadH} margin={{top:2,right:4,bottom:0,left:-22}}>
+                <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
+                <XAxis dataKey="t" tick={{fill:T.textDim,fontSize:7,fontFamily:FM}}
+                  interval={Math.floor(spreadH.length/4)}/>
+                <YAxis tick={{fill:T.textDim,fontSize:8,fontFamily:FM}}
+                  tickFormatter={v=>`$${v.toFixed(1)}`}/>
+                <ReferenceLine y={0} stroke="white" strokeDasharray="3 2" strokeOpacity={0.3}/>
+                <Tooltip content={<Tip dec={3}/>}/>
+                <defs>
+                  <linearGradient id="gEu" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor={T.cyan} stopOpacity={0.25}/>
+                    <stop offset="95%" stopColor={T.cyan} stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <Area dataKey="eu" name="EU Spread" stroke={T.cyan}  fill="url(#gEu)" strokeWidth={1.8} dot={false} isAnimationActive={false}/>
+                <Line dataKey="ap" name="AP Spread" stroke={T.amber} dot={false} strokeWidth={1.6} strokeDasharray="4 2" isAnimationActive={false}/>
+              </ComposedChart>
+            </ResponsiveContainer>
+          </Card>
 
-      {/* ══ ROW 3: MC + Waterfall + Forward ══════════════════════════ */}
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1.15fr 1.15fr",gap:7,marginBottom:7}}>
+          {/* FIX#9 — Margin analysis replaces raw P&L */}
+          <MarginPanel pEu={pEu} pAp={pAp} ttfUsd={ttfUsd} jkm={spx.jkm} params={params}/>
+        </div>
 
-        <Card accent={T.cyan}>
-          <SH label="Monte Carlo Distribution" right="500 sim · OU · Cholesky"/>
-          {mc&&(
-            <>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5,marginBottom:8}}>
-                {[
-                  {l:"E[Profit]", v:fMa(mc.mean),              c:pColor(mc.mean)},
-                  {l:"VaR 95%",   v:fMa(mc.var95),             c:T.red},
-                  {l:"P(Profit)", v:`${mc.probP.toFixed(1)}%`,  c:mc.probP>60?T.green:T.red},
-                  {l:"Sharpe",    v:mc.sharpe.toFixed(3),       c:T.amber},
-                ].map((s,i)=>(
-                  <div key={i} style={{background:T.bg2,padding:"5px 8px",borderRadius:2}}>
-                    <div style={{fontFamily:FONT_COND,fontSize:9,color:T.textMid,letterSpacing:"0.1em"}}>{s.l}</div>
-                    <div style={{fontFamily:FONT_MONO,fontSize:14,fontWeight:700,color:s.c}}>{s.v}</div>
+        {/* ── ROW B: Margin History | MC | Waterfall | Forward ──── */}
+        <div style={{display:"grid",gridTemplateColumns:"0.9fr 1fr 1.1fr 1.1fr",gap:5,marginBottom:5}}>
+
+          {/* FIX#9 — Margin $/MMBtu live history (replaces profit chart) */}
+          <Card accent={T.green}>
+            <SH label="Margin Live" right="$/MMBtu EU vs AP" accent={T.green}/>
+            <div style={{fontFamily:FM,fontSize:7.5,color:T.textDim,marginBottom:5,
+              paddingBottom:4,borderBottom:`1px solid ${T.line}`,
+              display:"flex",gap:8}}>
+              <span>BEP EU: <span style={{color:T.cyan}}>${f2(pEu.breakEvenDest)}</span></span>
+              <span>BEP AP: <span style={{color:T.amber}}>${f2(pAp.breakEvenDest)}</span></span>
+            </div>
+            <ResponsiveContainer width="100%" height={155}>
+              <ComposedChart data={marginH} margin={{top:2,right:4,bottom:0,left:-14}}>
+                <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
+                <XAxis dataKey="t" tick={{fill:T.textDim,fontSize:7,fontFamily:FM}}
+                  interval={Math.floor(marginH.length/4)}/>
+                <YAxis tick={{fill:T.textDim,fontSize:8,fontFamily:FM}}
+                  tickFormatter={v=>`$${v.toFixed(1)}`}/>
+                <ReferenceLine y={0} stroke="white" strokeDasharray="3 2" strokeOpacity={0.4}
+                  label={{value:"BEP",fill:T.textDim,fontSize:7,position:"insideTopRight"}}/>
+                <Tooltip content={<Tip pre="$" dec={2}/>}/>
+                <defs>
+                  <linearGradient id="gMEU" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor={T.green} stopOpacity={0.22}/>
+                    <stop offset="95%" stopColor={T.green} stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <Area dataKey="eu" name="EU $/MMBtu" stroke={T.green} fill="url(#gMEU)"
+                  strokeWidth={2} dot={false} isAnimationActive={false}/>
+                <Line dataKey="ap" name="AP $/MMBtu" stroke={T.amber} strokeWidth={2}
+                  dot={false} strokeDasharray="4 2" isAnimationActive={false}/>
+              </ComposedChart>
+            </ResponsiveContainer>
+          </Card>
+
+          {/* Monte Carlo */}
+          <Card accent={T.cyan}>
+            <SH label="Monte Carlo" right={`700sim · λ=${params.lambdaJump}`}/>
+            {mc&&(
+              <>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:3,marginBottom:5}}>
+                  {[
+                    {l:"E[M] EU",   v:fMa(mc.eu.mean),          c:pColor(mc.eu.mean)},
+                    {l:"E[M] AP",   v:fMa(mc.ap.mean),          c:pColor(mc.ap.mean)},
+                    {l:"VaR95 EU",  v:fMa(mc.eu.var95),         c:T.red},
+                    {l:"VaR95 AP",  v:fMa(mc.ap.var95),         c:T.redDim},
+                    {l:"VaR99 EU",  v:fMa(mc.eu.var99),         c:"#AA0020"},
+                    {l:"VaR99 AP",  v:fMa(mc.ap.var99),         c:"#880020"},
+                    {l:"Sharpe EU", v:mc.eu.sharpe.toFixed(3),  c:mc.eu.sharpe>0?T.amber:T.red},
+                    {l:"Sharpe AP", v:mc.ap.sharpe.toFixed(3),  c:mc.riskWarn?T.red:T.amber},
+                    {l:"P(profit)", v:`${mc.eu.probP.toFixed(1)}%`,c:mc.eu.probP>60?T.green:T.red},
+                    {l:"VolRatio",  v:`${mc.volRatio?.toFixed(2)}×`,c:mc.riskWarn?T.red:T.textMid},
+                  ].map((s,i)=>(
+                    <div key={i} style={{background:T.bg2,padding:"4px 6px",borderRadius:2}}>
+                      <div style={{fontFamily:FC,fontSize:8,color:T.textMid}}>{s.l}</div>
+                      <div style={{fontFamily:FM,fontSize:11,fontWeight:700,color:s.c}}>{s.v}</div>
+                    </div>
+                  ))}
+                </div>
+                {mc.riskWarn&&(
+                  <div style={{background:`${T.red}14`,border:`1px solid ${T.red}55`,
+                    borderLeft:`3px solid ${T.red}`,padding:"4px 8px",borderRadius:2,marginBottom:5}}>
+                    <div style={{fontFamily:FC,fontSize:9,fontWeight:700,color:T.red}}>
+                      ⚠ AP VOL {mc.volRatio?.toFixed(1)}× EU
+                    </div>
                   </div>
-                ))}
-              </div>
-              <ResponsiveContainer width="100%" height={115}>
-                <BarChart data={mc.bins} margin={{top:0,right:2,bottom:0,left:-26}}>
-                  <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
-                  <XAxis dataKey="x" tick={{fill:T.textDim,fontSize:7,fontFamily:FONT_MONO}}
-                    tickFormatter={v=>`${v}M`} interval={5}/>
-                  <YAxis tick={{fill:T.textDim,fontSize:7,fontFamily:FONT_MONO}}/>
-                  <ReferenceLine x="0.00" stroke="white" strokeDasharray="3 2" strokeOpacity={0.5}/>
-                  <Tooltip content={<Tip pre="" dec={0}/>}/>
-                  <Bar dataKey="n" name="Freq" isAnimationActive={false} radius={[1,1,0,0]}>
-                    {mc.bins.map((d,i)=><Cell key={i} fill={d.pos?`${T.cyan}CC`:`${T.red}CC`}/>)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </>
-          )}
-        </Card>
-
-        <Card accent={T.amber}>
-          <SH label="Cost / Revenue Breakdown" right="Sabine Pass → Rotterdam  (M$)"/>
-          <ResponsiveContainer width="100%" height={182}>
-            <BarChart data={wf} margin={{top:2,right:6,bottom:0,left:-12}}>
-              <CartesianGrid stroke={T.line} strokeDasharray="2 4" vertical={false}/>
-              <XAxis dataKey="n" tick={{fill:T.textMid,fontSize:9,fontFamily:FONT_COND,fontWeight:700}}/>
-              <YAxis tick={{fill:T.textDim,fontSize:8,fontFamily:FONT_MONO}}
-                tickFormatter={v=>`${v.toFixed(1)}M`}/>
-              <ReferenceLine y={0} stroke="white" strokeOpacity={0.4}/>
-              <Tooltip content={<Tip pre="" dec={2}/>}/>
-              <Bar dataKey="v" name="M$" isAnimationActive={false} radius={[2,2,0,0]}>
-                {wf.map((d,i)=><Cell key={i} fill={d.fill}/>)}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </Card>
-
-        <Card accent={T.purple}>
-          <SH label="Forward Curve — 12M (OU projection)"
-            right={<Badge label={curveLbl} color={curveCol}/>}/>
-          <ResponsiveContainer width="100%" height={182}>
-            <LineChart data={fwd} margin={{top:2,right:6,bottom:0,left:-14}}>
-              <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
-              <XAxis dataKey="m" tick={{fill:T.textDim,fontSize:9,fontFamily:FONT_MONO}}/>
-              <YAxis tick={{fill:T.textDim,fontSize:8,fontFamily:FONT_MONO}}/>
-              <Tooltip content={<Tip dec={2}/>}/>
-              <Line dataKey="ttf" name="TTF$" stroke={T.cyan}   dot={{r:2,fill:T.cyan}}   strokeWidth={2} isAnimationActive={false}/>
-              <Line dataKey="jkm" name="JKM"  stroke={T.amber}  dot={{r:2,fill:T.amber}}  strokeWidth={2} isAnimationActive={false}/>
-              <Line dataKey="hh"  name="HH"   stroke={T.green}  dot={{r:2,fill:T.green}}  strokeWidth={2} isAnimationActive={false}/>
-            </LineChart>
-          </ResponsiveContainer>
-        </Card>
-      </div>
-
-      {/* ══ ROW 4: Sensitività + Boil-off + Decision ═════════════════ */}
-      <div style={{display:"grid",gridTemplateColumns:"1.4fr 1fr 1.3fr",gap:7,marginBottom:8}}>
-
-        <Card accent={T.cyan}>
-          <SH label="Sensitività: Profitto vs Charter Rate" right={`attuale ${fK(charter)}/d`}/>
-          <div style={{display:"flex",alignItems:"center",gap:9,marginBottom:8}}>
-            <span style={{fontFamily:FONT_COND,fontSize:10,color:T.textMid,whiteSpace:"nowrap"}}>
-              Charter Rate:
-            </span>
-            <input type="range" min={40000} max={140000} step={5000}
-              value={charter} onChange={e=>setCharter(+e.target.value)}/>
-            <span style={{fontFamily:FONT_MONO,fontSize:11,fontWeight:700,color:T.cyan,whiteSpace:"nowrap"}}>
-              {fK(charter)}/d
-            </span>
-          </div>
-          <ResponsiveContainer width="100%" height={145}>
-            <ComposedChart data={sensi} margin={{top:2,right:6,bottom:0,left:-12}}>
-              <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
-              <XAxis dataKey="cr" tick={{fill:T.textDim,fontSize:8,fontFamily:FONT_MONO}}
-                tickFormatter={v=>`$${v}k`}/>
-              <YAxis tick={{fill:T.textDim,fontSize:8,fontFamily:FONT_MONO}}
-                tickFormatter={v=>`${v.toFixed(0)}M`}/>
-              <ReferenceLine y={0} stroke="white" strokeDasharray="3 2" strokeOpacity={0.4}/>
-              <ReferenceLine x={charter/1000} stroke={T.amber} strokeDasharray="4 2"
-                label={{value:"●",fill:T.amber,fontSize:13,position:"insideTopRight"}}/>
-              <Tooltip content={<Tip pre="" dec={2}/>}/>
-              <defs>
-                <linearGradient id="gS" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor={T.cyan} stopOpacity={0.3}/>
-                  <stop offset="95%" stopColor={T.cyan} stopOpacity={0}/>
-                </linearGradient>
-              </defs>
-              <Area dataKey="p" name="Profit M$" stroke={T.cyan} fill="url(#gS)"
-                strokeWidth={2.2} dot={false} isAnimationActive={false}/>
-            </ComposedChart>
-          </ResponsiveContainer>
-        </Card>
-
-        <Card accent={T.red}>
-          <SH label="Boil-Off Decay Curve" right="0.10 / 0.15 / 0.20 %/d"/>
-          <ResponsiveContainer width="100%" height={172}>
-            <LineChart data={boiloff} margin={{top:2,right:4,bottom:0,left:-20}}>
-              <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
-              <XAxis dataKey="d" tick={{fill:T.textDim,fontSize:8,fontFamily:FONT_MONO}}
-                label={{value:"days",fill:T.textDim,fontSize:8,position:"insideBottomRight",offset:-2}}/>
-              <YAxis tick={{fill:T.textDim,fontSize:8,fontFamily:FONT_MONO}}
-                domain={[90,100]} tickFormatter={v=>`${v}%`}/>
-              <ReferenceLine x={travelDays(ROUTES[0].nm)} stroke={T.cyan}
-                strokeDasharray="3 2" label={{value:"EU",fill:T.cyan,fontSize:8,position:"insideTopRight"}}/>
-              <ReferenceLine x={travelDays(ROUTES[1].nm)} stroke={T.amber}
-                strokeDasharray="3 2" label={{value:"AP",fill:T.amber,fontSize:8,position:"insideTopRight"}}/>
-              <Tooltip content={<Tip pre="" dec={2}/>}/>
-              <Line dataKey="lo" name="0.10%/d" stroke={T.green} dot={false} strokeWidth={1.8} isAnimationActive={false}/>
-              <Line dataKey="nm" name="0.15%/d" stroke={T.amber} dot={false} strokeWidth={1.8} isAnimationActive={false}/>
-              <Line dataKey="hi" name="0.20%/d" stroke={T.red}   dot={false} strokeWidth={1.8} isAnimationActive={false}/>
-            </LineChart>
-          </ResponsiveContainer>
-        </Card>
-
-        <Card accent={T.green}>
-          <SH label="Decision Engine — Optimal Routing" right={ts()}/>
-          <div style={{display:"flex",flexDirection:"column",gap:7}}>
-
-            {/* Optimal block */}
-            <div style={{background:`${T.green}0C`,border:`1px solid ${T.green}2A`,
-              borderLeft:`3px solid ${T.green}`,padding:"9px 11px",borderRadius:2}}>
-              <div style={{fontFamily:FONT_COND,fontSize:9,color:T.textMid,
-                letterSpacing:"0.14em",marginBottom:3}}>DESTINAZIONE OTTIMALE</div>
-              <div style={{fontFamily:FONT_COND,fontSize:19,fontWeight:800,color:T.green,lineHeight:1}}>
-                {optimal.r.label} <span style={{fontSize:13,color:T.greenDim}}>({optimal.r.dest})</span>
-              </div>
-              <div style={{fontFamily:FONT_MONO,fontSize:9,color:T.textMid,marginTop:2}}>
-                {optimal.r.name}
-              </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:8}}>
-                {[
-                  {l:"NET PROFIT",  v:fM(optimal.p.profit),                     c:pColor(optimal.p.profit)},
-                  {l:"$/MMBtu",     v:(optimal.p.profit/optimal.p.deliv).toFixed(2), c:T.text},
-                  {l:"TRAVEL",      v:`${optimal.p.td.toFixed(1)}d`,             c:T.textMid},
-                ].map((s,i)=>(
-                  <div key={i}>
-                    <div style={{fontFamily:FONT_COND,fontSize:8,color:T.textMid,letterSpacing:"0.1em"}}>{s.l}</div>
-                    <div style={{fontFamily:FONT_MONO,fontSize:14,fontWeight:700,color:s.c}}>{s.v}</div>
+                )}
+                {div.shouldDivert&&(
+                  <div style={{background:`${T.amber}14`,border:`1px solid ${T.amber}55`,
+                    borderLeft:`3px solid ${T.amber}`,padding:"4px 8px",borderRadius:2,marginBottom:5}}>
+                    <div style={{fontFamily:FC,fontSize:9,fontWeight:700,color:T.amber}}>
+                      🔀 DIVERT SIGNAL · ΔRev {fM(div.delta)}
+                    </div>
+                    <div style={{fontFamily:FM,fontSize:7,color:T.textMid}}>
+                      JKM threshold: ${div.jkmThreshold.toFixed(2)}/MMBtu met
+                    </div>
                   </div>
-                ))}
+                )}
+                <ResponsiveContainer width="100%" height={80}>
+                  <BarChart data={mc.eu.bins} margin={{top:0,right:2,bottom:0,left:-26}}>
+                    <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
+                    <XAxis dataKey="x" tick={{fill:T.textDim,fontSize:6,fontFamily:FM}}
+                      tickFormatter={v=>`${v}M`} interval={5}/>
+                    <YAxis tick={{fill:T.textDim,fontSize:6,fontFamily:FM}}/>
+                    <Bar dataKey="n" isAnimationActive={false} radius={[1,1,0,0]}>
+                      {mc.eu.bins.map((d,i)=>(
+                        <Cell key={i} fill={d.vz===2?"#5A0010":d.vz===1?`${T.red}BB`:d.pos?`${T.cyan}CC`:`${T.redDim}88`}/>
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+                <div style={{display:"flex",gap:8,marginTop:3,fontFamily:FM,fontSize:7,color:T.textDim}}>
+                  <span style={{color:"#5A0010"}}>■</span>VaR99
+                  <span style={{color:T.red}}>■</span>VaR95
+                  <span style={{color:T.cyan}}>■</span>Profit
+                </div>
+              </>
+            )}
+          </Card>
+
+          {/* Waterfall — SPA cost label updated */}
+          <Card accent={T.amber}>
+            <SH label="Cost Breakdown" right="EU Route (M$)"/>
+            <ResponsiveContainer width="100%" height={162}>
+              <BarChart data={wf} margin={{top:2,right:4,bottom:0,left:-12}}>
+                <CartesianGrid stroke={T.line} strokeDasharray="2 4" vertical={false}/>
+                <XAxis dataKey="n" tick={{fill:T.textMid,fontSize:9,fontFamily:FC,fontWeight:700}}/>
+                <YAxis tick={{fill:T.textDim,fontSize:8,fontFamily:FM}}
+                  tickFormatter={v=>`${v.toFixed(1)}M`}/>
+                <ReferenceLine y={0} stroke="rgba(255,255,255,0.35)"/>
+                <Tooltip content={<Tip pre="" dec={2}/>}/>
+                <Bar dataKey="v" isAnimationActive={false} radius={[2,2,0,0]}>
+                  {wf.map((d,i)=><Cell key={i} fill={d.fill}/>)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            <div style={{fontFamily:FM,fontSize:7.5,color:T.textDim,marginTop:4,
+              paddingTop:4,borderTop:`1px solid ${T.line}`,display:"flex",gap:8,flexWrap:"wrap"}}>
+              <span>SPA: <span style={{color:T.red}}>${pEu.acqPerMmbtu.toFixed(2)}/M</span></span>
+              <span>Charter(+ballast): <span style={{color:T.amber}}>{fDol(pEu.charter)}</span></span>
+              <span>BOG opp: <span style={{color:pEu.bogOppCost>0?T.red:T.green}}>
+                {pEu.bogOppCost>100?`+${fDol(pEu.bogOppCost)}`:"nil"}
+              </span></span>
+            </div>
+          </Card>
+
+          {/* Forward Curve */}
+          <Card accent={T.purple}>
+            <SH label="Forward 12M (OU)" right={<Badge label={curveLbl} color={curveCol}/>}/>
+            <ResponsiveContainer width="100%" height={162}>
+              <LineChart data={fwd} margin={{top:2,right:6,bottom:0,left:-14}}>
+                <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
+                <XAxis dataKey="m" tick={{fill:T.textDim,fontSize:9,fontFamily:FM}}/>
+                <YAxis tick={{fill:T.textDim,fontSize:8,fontFamily:FM}}/>
+                <Tooltip content={<Tip dec={2}/>}/>
+                <Line dataKey="ttf" name="TTF$" stroke={T.cyan}  dot={{r:2,fill:T.cyan}}  strokeWidth={2} isAnimationActive={false}/>
+                <Line dataKey="jkm" name="JKM"  stroke={T.amber} dot={{r:2,fill:T.amber}} strokeWidth={2} isAnimationActive={false}/>
+                <Line dataKey="hh"  name="HH"   stroke={T.green} dot={{r:2,fill:T.green}} strokeWidth={2} isAnimationActive={false}/>
+              </LineChart>
+            </ResponsiveContainer>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:3,marginTop:5}}>
+              {[
+                {l:"HH 12M", v:`$${fwd[11]?.hh.toFixed(2)}`, c:T.green},
+                {l:"TTF 12M",v:`$${fwd[11]?.ttf.toFixed(2)}`,c:T.cyan},
+                {l:"JKM 12M",v:`$${fwd[11]?.jkm.toFixed(2)}`,c:T.amber},
+              ].map((s,i)=>(
+                <div key={i} style={{background:T.bg2,padding:"4px 6px",borderRadius:2}}>
+                  <div style={{fontFamily:FC,fontSize:8,color:T.textMid}}>{s.l}</div>
+                  <div style={{fontFamily:FM,fontSize:11,fontWeight:700,color:s.c}}>{s.v}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+
+        {/* ── ROW C: Sensitivity + Tornado | Route Analysis | Decision Engine ── */}
+        <div style={{display:"grid",gridTemplateColumns:"1.35fr 0.95fr 1.25fr",gap:5,marginBottom:6}}>
+
+          {/* Charter sensitivity + Tornado */}
+          <Card accent={T.cyan}>
+            <SH label="Sensitività — Charter & Driver Analysis"
+              right={`${fK(params.charterRate)}/d · ballast ×${params.ballastFactor}`}/>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+              <span style={{fontFamily:FC,fontSize:9,color:T.textMid,whiteSpace:"nowrap"}}>Charter:</span>
+              <input type="range" min={40000} max={500000} step={5000}
+                value={params.charterRate} onChange={e=>updateParam("charterRate",+e.target.value)}/>
+              <span style={{fontFamily:FM,fontSize:11,fontWeight:700,color:T.cyan,whiteSpace:"nowrap"}}>
+                {fK(params.charterRate)}/d
+              </span>
+            </div>
+            <ResponsiveContainer width="100%" height={72}>
+              <ComposedChart data={sensi} margin={{top:2,right:4,bottom:0,left:-8}}>
+                <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
+                <XAxis dataKey="cr" tick={{fill:T.textDim,fontSize:7,fontFamily:FM}}
+                  tickFormatter={v=>`$${v}k`}/>
+                <YAxis tick={{fill:T.textDim,fontSize:7,fontFamily:FM}}
+                  tickFormatter={v=>`$${v.toFixed(1)}`}/>
+                <ReferenceLine y={0} stroke="white" strokeDasharray="3 2" strokeOpacity={0.35}/>
+                <ReferenceLine x={params.charterRate/1000} stroke={T.amber} strokeDasharray="4 2"/>
+                <Tooltip content={<Tip pre="$" dec={2}/>}/>
+                <defs>
+                  <linearGradient id="gS" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor={T.green} stopOpacity={0.25}/>
+                    <stop offset="95%" stopColor={T.green} stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <Area dataKey="margin" name="Margin $/MMBtu" stroke={T.green} fill="url(#gS)"
+                  strokeWidth={2} dot={false} isAnimationActive={false}/>
+              </ComposedChart>
+            </ResponsiveContainer>
+
+            <div style={{marginTop:6,paddingTop:5,borderTop:`1px solid ${T.line}`}}>
+              <div style={{fontFamily:FC,fontSize:9,fontWeight:700,color:T.purple,
+                letterSpacing:"0.15em",marginBottom:3}}>
+                TORNADO — MARGIN SENSITIVITY ±1% (EU) · SPA slope now included
+              </div>
+              <TornadoChart data={spider}/>
+              <div style={{display:"flex",gap:10,marginTop:2,fontFamily:FM,fontSize:7,color:T.textDim}}>
+                <span style={{color:T.green}}>■</span>+1% shock
+                <span style={{color:T.red}}>■</span>−1% shock (Δ% margin)
               </div>
             </div>
+          </Card>
 
-            {/* Route comparison */}
-            {[{r:ROUTES[0],p:pEu,sp:spreadEu},{r:ROUTES[1],p:pAp,sp:spreadAp}].map((item,i)=>(
-              <div key={i} style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:5,
-                background:T.bg2,padding:"7px 9px",borderRadius:2,
-                border:`1px solid ${item.r.id===optimal.r.id?T.green:T.line}`}}>
-                <div>
-                  <div style={{fontFamily:FONT_COND,fontSize:8,color:T.textMid}}>ROTTA</div>
-                  <div style={{fontFamily:FONT_COND,fontSize:12,fontWeight:700,
-                    color:item.r.id===optimal.r.id?T.green:T.text}}>
-                    {item.r.dest} {item.r.id===optimal.r.id?"★":""}
+          {/* Route Analysis — Suez vs Cape */}
+          <Card accent={T.amber}>
+            <SH label="Route Analysis" right="Suez vs Cape"/>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginBottom:7}}>
+              {[
+                {key:false,label:"VIA SUEZ",nm:NM.AP_SUEZ,sub:"16,100nm"},
+                {key:true, label:"VIA CAPE", nm:NM.AP_CAPE,sub:"20,200nm · no fee"},
+              ].map(opt=>(
+                <button key={String(opt.key)} onClick={()=>updateParam("useCape",opt.key)} style={{
+                  fontFamily:FC,fontSize:10,fontWeight:700,cursor:"pointer",
+                  borderRadius:2,padding:"7px 8px",textAlign:"left",
+                  border:`1px solid ${params.useCape===opt.key?T.amber:T.line}`,
+                  background:params.useCape===opt.key?`${T.amber}20`:T.bg2,
+                  color:params.useCape===opt.key?T.amber:T.textMid,
+                  transition:"all .12s",
+                }}>
+                  <div style={{letterSpacing:"0.1em"}}>{params.useCape===opt.key?"★ ":""}{opt.label}</div>
+                  <div style={{fontFamily:FM,fontSize:7.5,color:T.textDim,marginTop:2,fontWeight:400}}>
+                    {opt.sub} · {travelDays(opt.nm,params.speedKnots).toFixed(1)}d laden
+                    <br/>+{(travelDays(opt.nm,params.speedKnots)*params.ballastFactor).toFixed(1)}d ballast
+                  </div>
+                </button>
+              ))}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginBottom:7}}>
+              {[
+                {l:"Suez P&L",    v:fMa(rte.suezProfit), c:pColor(rte.suezProfit)},
+                {l:"Cape P&L",    v:fMa(rte.capeProfit), c:pColor(rte.capeProfit)},
+                {l:"Extra Days",  v:`+${rte.extraDays.toFixed(1)}d`,c:T.red},
+                {l:"Suez Fees",   v:fDol(rte.suezFees),  c:T.amber},
+                {l:"Cape+Charter",v:fDol(rte.capeExtraCost),c:T.amber},
+                {l:"OPTIMAL",     v:rte.optimal,          c:rte.optimal==="SUEZ"?T.cyan:T.green},
+              ].map((s,i)=>(
+                <div key={i} style={{background:T.bg2,padding:"5px 7px",borderRadius:2}}>
+                  <div style={{fontFamily:FC,fontSize:8,color:T.textMid}}>{s.l}</div>
+                  <div style={{fontFamily:FM,fontSize:12,fontWeight:700,color:s.c}}>{s.v}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{background:T.bg2,border:`1px solid ${params.suezWarActive?T.red:T.line}`,
+              borderLeft:`2px solid ${params.suezWarActive?T.red:T.line}`,
+              padding:"5px 8px",borderRadius:2,marginBottom:6,
+              display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <div style={{fontFamily:FC,fontSize:9,fontWeight:700,
+                  color:params.suezWarActive?T.red:T.textMid}}>WAR RISK SURCHARGE</div>
+                <div style={{fontFamily:FM,fontSize:7.5,color:T.textDim}}>{fDol(params.warRiskSuez)}</div>
+              </div>
+              <button onClick={()=>updateParam("suezWarActive",!params.suezWarActive)} style={{
+                fontFamily:FM,fontSize:10,fontWeight:700,cursor:"pointer",
+                border:`1px solid ${params.suezWarActive?T.red:T.line2}`,
+                background:params.suezWarActive?`${T.red}28`:T.bg3,
+                color:params.suezWarActive?T.red:T.textDim,borderRadius:2,padding:"3px 9px",
+              }}>{params.suezWarActive?"ACTIVE":"OFF"}</button>
+            </div>
+            {/* Compact boil-off */}
+            <SH label="Boil-Off Decay" accent={T.redDim} right={`sea ×${SEA_STATE[params.seaState]?.mult}`}/>
+            <ResponsiveContainer width="100%" height={78}>
+              <LineChart data={boiloff} margin={{top:2,right:4,bottom:0,left:-20}}>
+                <CartesianGrid stroke={T.line} strokeDasharray="2 4"/>
+                <XAxis dataKey="d" tick={{fill:T.textDim,fontSize:7,fontFamily:FM}}/>
+                <YAxis tick={{fill:T.textDim,fontSize:7,fontFamily:FM}} domain={[90,100]}
+                  tickFormatter={v=>`${v}%`}/>
+                <ReferenceLine x={travelDays(NM.EU,params.speedKnots)} stroke={T.cyan}
+                  strokeDasharray="3 2" label={{value:"EU",fill:T.cyan,fontSize:7,position:"insideTopRight"}}/>
+                <ReferenceLine x={travelDays(params.useCape?NM.AP_CAPE:NM.AP_SUEZ,params.speedKnots)}
+                  stroke={T.amber} strokeDasharray="3 2"
+                  label={{value:"AP",fill:T.amber,fontSize:7,position:"insideTopRight"}}/>
+                <Tooltip content={<Tip pre="" dec={2}/>}/>
+                <Line dataKey="lo" stroke={T.green} dot={false} strokeWidth={1.5} isAnimationActive={false}/>
+                <Line dataKey="nm" stroke={T.amber} dot={false} strokeWidth={1.5} isAnimationActive={false}/>
+                <Line dataKey="hi" stroke={T.red}   dot={false} strokeWidth={1.5} isAnimationActive={false}/>
+              </LineChart>
+            </ResponsiveContainer>
+          </Card>
+
+          {/* Decision Engine */}
+          <Card accent={T.green}>
+            <SH label="Decision Engine — Risk-Adjusted" right={ts()}/>
+            <div style={{display:"flex",flexDirection:"column",gap:5}}>
+              {mc?.riskWarn&&(
+                <div style={{background:`${T.red}18`,border:`1px solid ${T.red}66`,
+                  borderLeft:`3px solid ${T.red}`,padding:"5px 9px",borderRadius:2,
+                  display:"flex",alignItems:"center",gap:7}}>
+                  <span style={{fontSize:15}}>⚠️</span>
+                  <div>
+                    <div style={{fontFamily:FC,fontSize:10,fontWeight:700,color:T.red}}>
+                      RISK WARNING — AP ROUTE
+                    </div>
+                    <div style={{fontFamily:FM,fontSize:7.5,color:T.textMid}}>
+                      Vol {mc.volRatio?.toFixed(2)}× EU · Sharpe AP {mc.ap.sharpe.toFixed(2)} vs EU {mc.eu.sharpe.toFixed(2)}
+                    </div>
                   </div>
                 </div>
-                <div>
-                  <div style={{fontFamily:FONT_COND,fontSize:8,color:T.textMid}}>PROFIT</div>
-                  <div style={{fontFamily:FONT_MONO,fontSize:11,fontWeight:700,color:pColor(item.p.profit)}}>
-                    {fMa(item.p.profit)}
+              )}
+              {conflict&&(
+                <div style={{background:`${T.amber}12`,border:`1px solid ${T.amber}44`,
+                  borderLeft:`2px solid ${T.amber}`,padding:"4px 8px",borderRadius:2}}>
+                  <div style={{fontFamily:FM,fontSize:8,color:T.amber}}>
+                    ⚡ Raw best: {rawOptId==="EU"?"Europa":"Asia-Pac"} ≠ Risk-adj: {riskOptId==="EU"?"Europa":"Asia-Pac"}
                   </div>
                 </div>
-                <div>
-                  <div style={{fontFamily:FONT_COND,fontSize:8,color:T.textMid}}>SPREAD</div>
-                  <div style={{fontFamily:FONT_MONO,fontSize:11,fontWeight:700,color:pColor(item.sp)}}>
-                    ${item.sp.toFixed(2)}
+              )}
+              {div.shouldDivert&&(
+                <div style={{background:`${T.amber}14`,border:`1px solid ${T.amber}55`,
+                  borderLeft:`3px solid ${T.amber}`,padding:"5px 9px",borderRadius:2}}>
+                  <div style={{fontFamily:FC,fontSize:9,fontWeight:700,color:T.amber}}>
+                    🔀 CARGO DIVERSION SIGNAL (50%)
+                  </div>
+                  <div style={{fontFamily:FM,fontSize:7.5,color:T.textMid,marginTop:1}}>
+                    EU→AP: ΔRevenue {fM(div.delta)} · JKM≥${div.jkmThreshold.toFixed(2)} threshold
                   </div>
                 </div>
-                <div style={{display:"flex",alignItems:"flex-end"}}>
-                  <Badge label={item.p.profit>0?"ARBIT":"LOSS"} color={item.p.profit>0?T.green:T.red}/>
+              )}
+
+              {/* Optimal block — now shows margin as primary metric */}
+              <div style={{background:`${T.green}0C`,border:`1px solid ${T.green}2A`,
+                borderLeft:`3px solid ${T.green}`,padding:"7px 10px",borderRadius:2}}>
+                <div style={{fontFamily:FC,fontSize:9,color:T.textMid,letterSpacing:"0.14em",marginBottom:2}}>
+                  DESTINAZIONE OTTIMALE (MARGIN)
+                </div>
+                <div style={{fontFamily:FC,fontSize:17,fontWeight:800,color:T.green,lineHeight:1}}>
+                  {optimal.label}
+                  <span style={{fontSize:12,color:T.greenDim}}> ({optimal.dest})</span>
+                  {stressMode&&<span style={{fontSize:9,color:SS[stressMode].color,marginLeft:7,fontFamily:FM}}>⚡ STRESS</span>}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,marginTop:6}}>
+                  {[
+                    {l:"MARGIN/MMBtu",v:`${optimal.p.marginPerMmbtu>=0?"+":""}$${f2(optimal.p.marginPerMmbtu)}`,c:pColor(optimal.p.marginPerMmbtu)},
+                    {l:"TOTAL MARGIN",v:fM(optimal.p.marginTotal),c:pColor(optimal.p.marginTotal)},
+                    {l:"TRAVEL+BALLAST",v:`${(optimal.p.td+optimal.p.ballastDays).toFixed(0)}d`,c:T.textMid},
+                  ].map((s,i)=>(
+                    <div key={i}>
+                      <div style={{fontFamily:FC,fontSize:8,color:T.textMid}}>{s.l}</div>
+                      <div style={{fontFamily:FM,fontSize:12,fontWeight:700,color:s.c}}>{s.v}</div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            ))}
 
-            {/* MC + FWD summary */}
-            {mc&&(
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5}}>
-                {[
-                  {l:"MC E[P]",    v:fMa(mc.mean),              c:pColor(mc.mean)},
-                  {l:"P(profit)", v:`${mc.probP.toFixed(0)}%`,  c:mc.probP>60?T.green:T.red},
-                  {l:"FWD CURVE", v:curveLbl,                   c:curveCol},
-                ].map((s,i)=>(
-                  <div key={i} style={{background:T.bg2,padding:"5px 7px",borderRadius:2}}>
-                    <div style={{fontFamily:FONT_COND,fontSize:8,color:T.textMid,letterSpacing:"0.1em"}}>{s.l}</div>
-                    <div style={{fontFamily:FONT_MONO,fontSize:12,fontWeight:700,color:s.c}}>{s.v}</div>
+              {/* Route comparison */}
+              {[
+                {id:"EU",label:"Europa",   dest:"TTF",p:pEu,mcs:mc?.eu},
+                {id:"AP",label:"Asia-Pac", dest:"JKM",p:pAp,mcs:mc?.ap},
+              ].map(item=>(
+                <div key={item.id} style={{background:T.bg2,padding:"6px 9px",borderRadius:2,
+                  border:`1px solid ${item.id===rawOptId?T.green:T.line}`}}>
+                  <div style={{display:"grid",gridTemplateColumns:"0.7fr 0.9fr 0.8fr 1fr",gap:4,alignItems:"center"}}>
+                    <div>
+                      <div style={{fontFamily:FC,fontSize:8,color:T.textMid}}>ROTTA</div>
+                      <div style={{fontFamily:FC,fontSize:12,fontWeight:700,color:item.id===rawOptId?T.green:T.text}}>
+                        {item.dest}{item.id===rawOptId?" ★":""}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{fontFamily:FC,fontSize:8,color:T.textMid}}>MARGIN/M</div>
+                      <div style={{fontFamily:FM,fontSize:11,fontWeight:700,color:pColor(item.p.marginPerMmbtu)}}>
+                        ${f2(item.p.marginPerMmbtu)}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{fontFamily:FC,fontSize:8,color:T.textMid}}>SHARPE</div>
+                      <div style={{fontFamily:FM,fontSize:11,fontWeight:700,
+                        color:item.mcs?(item.mcs.sharpe>0.8?T.green:item.mcs.sharpe>0.3?T.amber:T.red):T.textMid}}>
+                        {item.mcs?item.mcs.sharpe.toFixed(2):"—"}
+                      </div>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:3,alignItems:"flex-end"}}>
+                      {item.id===riskOptId&&<Badge label="RISK-ADJ ★" color={T.green}/>}
+                      {item.id!==riskOptId&&<Badge label="SUB-OPT"   color={T.textDim}/>}
+                      <Badge label={item.p.marginPerMmbtu>0?"IN MONEY":"LOSS"} color={item.p.marginPerMmbtu>0?T.cyan:T.red}/>
+                    </div>
                   </div>
-                ))}
-              </div>
-            )}
+                  {item.mcs&&(
+                    <div style={{display:"flex",gap:8,marginTop:4,paddingTop:3,
+                      borderTop:`1px solid ${T.line}`,fontFamily:FM,fontSize:7.5}}>
+                      <span style={{color:T.textDim}}>VaR95: <span style={{color:T.red}}>{fMa(item.mcs.var95)}</span></span>
+                      <span style={{color:T.textDim}}>VaR99: <span style={{color:"#B00030"}}>{fMa(item.mcs.var99)}</span></span>
+                      <span style={{color:T.textDim}}>BEP: <span style={{color:T.cyan}}>${f2(item.p.breakEvenDest)}</span></span>
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {mc&&(
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4}}>
+                  {[
+                    {l:"E[Margin]",  v:fMa(mc.eu.mean),            c:pColor(mc.eu.mean)},
+                    {l:"P(profit)", v:`${mc.eu.probP.toFixed(0)}%`, c:mc.eu.probP>60?T.green:T.red},
+                    {l:"FWD CURVE", v:curveLbl,                     c:curveCol},
+                  ].map((s,i)=>(
+                    <div key={i} style={{background:T.bg2,padding:"5px 7px",borderRadius:2}}>
+                      <div style={{fontFamily:FC,fontSize:8,color:T.textMid}}>{s.l}</div>
+                      <div style={{fontFamily:FM,fontSize:12,fontWeight:700,color:s.c}}>{s.v}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+
+        {/* ── FOOTER ────────────────────────────────────────────── */}
+        <div style={{borderTop:`1px solid ${T.line}`,paddingTop:6,
+          display:"flex",justifyContent:"space-between",alignItems:"center",
+          flexWrap:"wrap",gap:5}}>
+          <div style={{fontFamily:FM,fontSize:7.5,color:T.textDim}}>
+            SPA: HH×{params.spaSlope}+${params.sTolling}+${params.sLiquefaction}=<span style={{color:T.red}}>${pEu.acqPerMmbtu.toFixed(2)}/MMBtu</span>
+            · Heel {params.heelM3}m³ · Sea {SEA_STATE[params.seaState]?.label} ×{SEA_STATE[params.seaState]?.mult}
+            · Charter ×{(1+params.ballastFactor).toFixed(2)} (laden+ballast)
+            · OU κ={OU_KAPPA} · Jump λ={params.lambdaJump} · Hawkes +60%
+            {params.blPriceLocked&&<span style={{color:T.purple}}> · 🔒 B/L EU:${params.blPriceEU} AP:${params.blPriceAP}</span>}
+            {params.suezWarActive&&<span style={{color:T.red}}> · WAR RISK ACTIVE</span>}
+            {stressMode&&<span style={{color:SS[stressMode].color}}> · ⚡ {SS[stressMode].label}</span>}
           </div>
-        </Card>
-      </div>
-
-      {/* ══ FOOTER ═══════════════════════════════════════════════════ */}
-      <div style={{borderTop:`1px solid ${T.line}`,paddingTop:8,
-        display:"flex",justifyContent:"space-between",alignItems:"center",
-        flexWrap:"wrap",gap:5}}>
-        <div style={{fontFamily:FONT_MONO,fontSize:9,color:T.textDim}}>
-          ⚙ OU κ={OU_KAPPA}  ·  Cholesky σ={JSON.stringify(VOL_PRESETS[volMode])}
-          ·  Charter ${fK(charter)}/d  ·  Q-Flex 174k m³ / {CAP_MMBTU.toLocaleString("it-IT")} MMBtu
-        </div>
-        <div style={{fontFamily:FONT_MONO,fontSize:9,color:T.textDim,textAlign:"center"}}>
-          <span style={{color:fxOk?T.green:T.amber}}>● </span>
-          FX: Frankfurter/BCE (gratuita, no-key)  ·  HH/TTF: seed EIA avg 2025 + OU  ·  JKM: proxy HH×3.8+1.5
-        </div>
-        <div style={{fontFamily:FONT_MONO,fontSize:9,color:T.textDim}}>
-          {new Date().toLocaleString("it-IT")}  ·  #{tick}
+          <div style={{fontFamily:FM,fontSize:7.5,color:T.textDim}}>
+            <span style={{color:fxOk?T.green:T.amber}}>● </span>
+            BCE/Frankfurter · OU+Merton JD · Hawkes Process · SPA Acq. · Dual-Fuel · VaR95/99 · v5.0
+          </div>
+          <div style={{fontFamily:FM,fontSize:7.5,color:T.textDim}}>
+            {new Date().toLocaleString("it-IT")} · #{tick}
+          </div>
         </div>
       </div>
     </div>
