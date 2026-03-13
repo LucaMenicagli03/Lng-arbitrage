@@ -6,25 +6,57 @@ import {
 } from "recharts";
 
 /* ════════════════════════════════════════════════════════════════════════
-   DESIGN TOKENS v6.0 — Semantic Color System
-   CYAN    → market data, live feeds (neutral info)
-   GREEN   → profit, positive P&L, optimal signals
-   AMBER   → OPEX costs, moderate warnings, thresholds
-   RED     → loss, VaR, high risk, stress events
-   PURPLE  → stochastic engine, forward model, scenarios
-   TEAL    → CVaR, regime state, new analytics
+   DESIGN TOKENS v6.3 — "Semantic Temperature" architecture
+   ─────────────────────────────────────────────────────────────────────
+   Three chromatic families. Temperature = financial meaning.
+
+   WARM FAMILY — tutto ciò che riduce il margine (costs & risk)
+     red      → loss · VaR95 · VaR99 · crisis regime · stress events
+     redDim   → CVaR95 · CVaR99 · deep tail risk (same family as VaR)
+     amber    → charter · fuel · regas · ports · alert thresholds
+                EU route accent · AP route accent (geographical warmth)
+     amberDim → capital cost (SOFR) · secondary cost breakdown
+
+   NEUTRAL FAMILY — informazione pura di mercato
+     cyan     → HH · TTF · JKM spot · FX rates · live market marker
+     cyanDim  → spread · forward curve · secondary market data
+
+   COOL FAMILY — profitto, opportunità, segnali positivi
+     green    → margin +$/M · revenue · normal regime · profitable cells
+     greenDim → E[P&L] MC mean · P(profit) · kelly sizing
+
+   MODEL / UI FAMILY — output analitico e chrome dell'interfaccia
+     indigo   → simulazione MC · OU paths · regime probabilities
+                parametri del modello · sidebar chrome
+     indigoDim→ secondary model output
+
+   BOUNDARY
+     teal     → break-even line · BEP zone marker · diversion threshold
+                (punto esatto dove rosso diventa verde)
 ════════════════════════════════════════════════════════════════════════ */
 const T = {
-  bg0:"#04060E", bg1:"#080D1A", bg2:"#0C1220", bg3:"#111828",
-  line:"#182038", line2:"#202A48",
-  cyan:"#00D9F5",  cyanDim:"#0091A8",
-  green:"#00F090", greenDim:"#00B86C",
-  red:"#F52D55",   redDim:"#B82040",
-  amber:"#FFB020", amberDim:"#CC7A00",
-  purple:"#9B6FFF",purpleDim:"#6B48CC",
-  teal:"#00E5CC",  tealDim:"#009988",
-  flash:"#FFFFFF",
-  text:"#C8D4EE", textMid:"#70809E", textDim:"#384860",
+  // Backgrounds — near-black with warm slate undertone
+  bg0:"#080A12", bg1:"#0C1020", bg2:"#101828", bg3:"#161E2E",
+  line:"#1E2840", line2:"#26324E",
+
+  // COOL — market data (neutral) + positive P&L
+  cyan:"#52B8D0",    cyanDim:"#357E94",
+  green:"#3DC87A",   greenDim:"#2A9058",
+
+  // WARM — risk + cost
+  red:"#D04E68",     redDim:"#963848",
+  amber:"#C4893A",   amberDim:"#8E6028",
+
+  // MODEL / UI chrome — analytical output, sidebar
+  // Shifted from violet (#8272CC) toward slate-indigo (#6878C0):
+  // reads as "derived from data" rather than arbitrary decoration
+  purple:"#6878C0",  purpleDim:"#4A5898",
+
+  // BOUNDARY — break-even threshold, separates warm from cool zones
+  teal:"#3AAEAA",    tealDim:"#267A76",
+
+  flash:"#D8E8F8",
+  text:"#B0C0D8", textMid:"#586880", textDim:"#2E3C52",
 };
 const FM = "'JetBrains Mono','Fira Code','Courier New',monospace";
 const FC = "'Barlow Condensed','Arial Narrow',sans-serif";
@@ -70,7 +102,7 @@ const SS = {
     note:"Sabine Pass offline · HH +30% · LNG alternatives spike",
   },
   glut: {
-    label:"LNG GLUT", icon:"📉", color:T.purple,
+    label:"LNG GLUT", icon:"📉", color:T.cyanDim,
     mHH:0.75, mTTF:0.82, mJKM:0.80, volMult:0.7,
     note:"Structural oversupply · HH −25% · JKM −20% · TTF −18%",
   },
@@ -685,14 +717,16 @@ function Ticker({label,value,delta,unit,color}){
    This eliminates all NaN / rendering crash vectors from the old version.
 ════════════════════════════════════════════════════════════════════════ */
 function matCell(margin) {
-  if (margin >=  2.0) return { bg:"#002B10", fg:"#00FF88", bepZone:false };
-  if (margin >=  1.0) return { bg:"#004D1E", fg:"#00E070", bepZone:false };
-  if (margin >=  0.15)return { bg:"#006630", fg:"#80FFB8", bepZone:false };
-  if (margin >=  0.0) return { bg:"#1A3A20", fg:"#60D080", bepZone:true  };
-  if (margin >= -0.15)return { bg:"#3A1A1A", fg:"#FF8080", bepZone:true  };
-  if (margin >= -1.0) return { bg:"#7A1020", fg:"#FFB0B0", bepZone:false };
-  if (margin >= -2.0) return { bg:"#A00822", fg:"#FFC0C0", bepZone:false };
-  /* margin < -2.0 */ return { bg:"#6B0018", fg:"#FFD0D0", bepZone:false };
+  // Zone backgrounds match T palette desaturated scheme:
+  // Greens: deep slate-green, reds: deep rose-slate
+  if (margin >=  2.0) return { bg:"#0A2818", fg:"#5ED49A", bepZone:false };
+  if (margin >=  1.0) return { bg:"#0E3820", fg:"#4AC082", bepZone:false };
+  if (margin >=  0.15)return { bg:"#163A26", fg:"#70C898", bepZone:false };
+  if (margin >=  0.0) return { bg:"#1C3028", fg:"#5BAE82", bepZone:true  };
+  if (margin >= -0.15)return { bg:"#301C20", fg:"#C07878", bepZone:true  };
+  if (margin >= -1.0) return { bg:"#4A1E28", fg:"#C89090", bepZone:false };
+  if (margin >= -2.0) return { bg:"#6A2030", fg:"#D4A0A8", bepZone:false };
+  /* margin < -2.0 */ return { bg:"#501428", fg:"#DEB8C0", bepZone:false };
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -944,14 +978,14 @@ function BreakEvenMatrixPanel({ params, hh, destUsd, routeId, destLabel, routeLa
                           borderRadius:2,
                           cursor:"default",
                           border: isCurCell
-                            ? `2px solid ${T.teal}`
+                            ? `2px solid ${T.cyan}`
                             : bepZone
-                            ? `1px solid ${T.amber}`
+                            ? `1px solid ${T.teal}`
                             : (isCurCol || isCR)
                             ? `1px solid rgba(255,255,255,0.14)`
                             : `1px solid rgba(0,0,0,0.5)`,
                           boxShadow: isCurCell
-                            ? `0 0 6px ${T.teal}70, inset 0 0 6px rgba(0,230,204,0.07)`
+                            ? `0 0 6px ${T.cyan}70, inset 0 0 6px rgba(82,184,208,0.07)`
                             : "none",
                           opacity: (!isCR && !isCurCol) ? 0.84 : 1,
                         }}
@@ -992,12 +1026,12 @@ function BreakEvenMatrixPanel({ params, hh, destUsd, routeId, destLabel, routeLa
           SCALE:
         </span>
         {[
-          { label:"-$2+",  bg:"#6B0018", fg:"#FFD0D0" },
-          { label:"-$1",   bg:"#A00822", fg:"#FFC0C0" },
-          { label:"~BEP",  bg:"#3A1A1A", fg:"#FF8080", bdr:T.amber },
-          { label:"~BEP",  bg:"#1A3A20", fg:"#60D080", bdr:T.amber },
-          { label:"+$1",   bg:"#004D1E", fg:"#00E070" },
-          { label:"+$2+",  bg:"#002B10", fg:"#00FF88" },
+          { label:"-$2+",  bg:"#501428", fg:"#DEB8C0" },
+          { label:"-$1",   bg:"#6A2030", fg:"#D4A0A8" },
+          { label:"~BEP",  bg:"#301C20", fg:"#C07878", bdr:T.teal },
+          { label:"~BEP",  bg:"#1C3028", fg:"#5BAE82", bdr:T.teal },
+          { label:"+$1",   bg:"#0E3820", fg:"#4AC082" },
+          { label:"+$2+",  bg:"#0A2818", fg:"#5ED49A" },
         ].map((s, i) => (
           <div key={i} style={{
             background:s.bg, color:s.fg,
@@ -1009,11 +1043,11 @@ function BreakEvenMatrixPanel({ params, hh, destUsd, routeId, destLabel, routeLa
             {s.label}
           </div>
         ))}
-        <span style={{ fontFamily:FM, fontSize:7, color:T.teal,
+        <span style={{ fontFamily:FM, fontSize:7, color:T.cyan,
           marginLeft:6, whiteSpace:"nowrap" }}>
           {"\u2605 = LIVE MARKET"}
         </span>
-        <span style={{ fontFamily:FM, fontSize:7, color:T.amber,
+        <span style={{ fontFamily:FM, fontSize:7, color:T.teal,
           marginLeft:3, whiteSpace:"nowrap" }}>
           {"~ = BEP ZONE (|margin| < $0.15)"}
         </span>
@@ -1090,7 +1124,7 @@ function MarginPanel({pEu, pAp, ttfUsd, jkm, params}){
                   color:r.color,letterSpacing:"0.12em"}}>
                   {r.label} · {r.dest}
                   {r.p.blLocked && <span style={{fontFamily:FM,fontSize:7,
-                    color:T.purple,marginLeft:6}}>🔒 B/L</span>}
+                    color:T.amber,marginLeft:6}}>🔒 B/L</span>}
                 </div>
                 {belowAlert && (
                   <span style={{fontFamily:FM,fontSize:7,color:T.amber,
@@ -1236,7 +1270,7 @@ function Sidebar({params, onUpdate, isOpen, onToggle, px}){
       <button onClick={onToggle} style={{
         position:"fixed",left:isOpen?284:0,top:"50%",transform:"translateY(-50%)",
         zIndex:1001,background:T.bg2,border:`1px solid ${T.line2}`,
-        color:T.purple,cursor:"pointer",padding:"12px 5px",
+        color:T.cyanDim,cursor:"pointer",padding:"12px 5px",
         borderRadius:"0 4px 4px 0",fontFamily:FM,fontSize:12,
         transition:"left 0.26s cubic-bezier(.4,0,.2,1)",lineHeight:1,
         boxShadow:"4px 0 16px rgba(0,0,0,.6)",
@@ -1250,12 +1284,12 @@ function Sidebar({params, onUpdate, isOpen, onToggle, px}){
         transform:isOpen?"translateX(0)":"translateX(-100%)",
         transition:"transform 0.26s cubic-bezier(.4,0,.2,1)",
       }}>
-        <div style={{fontFamily:FC,fontSize:14,fontWeight:800,color:T.purple,
+        <div style={{fontFamily:FC,fontSize:14,fontWeight:800,color:T.cyanDim,
           letterSpacing:"0.08em",marginBottom:12,paddingBottom:7,
           borderBottom:`1px solid ${T.line2}`,display:"flex",
           justifyContent:"space-between",alignItems:"center"}}>
           ⚙ SCENARIO EDITOR
-          <span style={{fontFamily:FM,fontSize:7.5,color:T.textDim}}>v6.1 Trader Ed.</span>
+          <span style={{fontFamily:FM,fontSize:7.5,color:T.textDim}}>v6.3 Trader Ed.</span>
         </div>
 
         <Sec title="SPA Contract — Acquisition Cost" accent={T.red}
@@ -1345,26 +1379,26 @@ function Sidebar({params, onUpdate, isOpen, onToggle, px}){
             onChange={v=>onUpdate("regasFeeAP",v)} unit="$/MMBtu" prec={2} color={T.amber}/>
         </Sec>
 
-        <Sec title="Alert Thresholds" accent={T.teal}
-          sub="Warn when margin falls below threshold (amber ring)">
+        <Sec title="Alert Thresholds" accent={T.amber}
+          sub="Warn when margin falls below threshold (amber ring on panel)">
           <Param label="ALERT EU" value={params.alertThresholdEU} min={0} max={2.0} step={0.05}
-            onChange={v=>onUpdate("alertThresholdEU",v)} unit="$/MMBtu" prec={2} color={T.teal}
+            onChange={v=>onUpdate("alertThresholdEU",v)} unit="$/MMBtu" prec={2} color={T.amber}
             note="Margin alert floor for EU route"/>
           <Param label="ALERT AP" value={params.alertThresholdAP} min={0} max={2.0} step={0.05}
-            onChange={v=>onUpdate("alertThresholdAP",v)} unit="$/MMBtu" prec={2} color={T.teal}
+            onChange={v=>onUpdate("alertThresholdAP",v)} unit="$/MMBtu" prec={2} color={T.amber}
             note="Margin alert floor for AP route"/>
         </Sec>
 
-        <Sec title="Cargo Position — B/L Price Lock" accent={T.purple}
+        <Sec title="Cargo Position — B/L Price Lock" accent={T.amber}
           sub="Lock sell price at B/L date. Revenue fixed, not live.">
           <Toggle label="B/L PRICE LOCK" value={params.blPriceLocked}
-            onChange={v=>onUpdate("blPriceLocked",v)} color={T.purple}/>
+            onChange={v=>onUpdate("blPriceLocked",v)} color={T.amber}/>
           {params.blPriceLocked && (
             <>
               <Param label="B/L PRICE EU" value={params.blPriceEU||10} min={3} max={40} step={0.10}
-                onChange={v=>onUpdate("blPriceEU",v)} unit="$/MMBtu" prec={2} color={T.purple}/>
+                onChange={v=>onUpdate("blPriceEU",v)} unit="$/MMBtu" prec={2} color={T.amber}/>
               <Param label="B/L PRICE AP" value={params.blPriceAP||12} min={3} max={50} step={0.10}
-                onChange={v=>onUpdate("blPriceAP",v)} unit="$/MMBtu" prec={2} color={T.purple}/>
+                onChange={v=>onUpdate("blPriceAP",v)} unit="$/MMBtu" prec={2} color={T.amber}/>
             </>
           )}
         </Sec>
@@ -1374,7 +1408,7 @@ function Sidebar({params, onUpdate, isOpen, onToggle, px}){
             background:T.bg2,padding:"6px 8px",borderRadius:2,
             borderLeft:`2px solid ${T.red}`,lineHeight:1.7}}>
             dS = OU(κ,μ,σ)·dt + J·dN(λ)<br/>
-            v6.1: J ~ Student-t(ν=4) [fat tails]<br/>
+            v6.3: J ~ Student-t(ν=4) [fat tails]<br/>
             Hawkes: P(J_JKM|J_TTF) += 60%<br/>
             Charter: corr ρ=+0.65 with TTF shock
           </div>
@@ -1385,18 +1419,18 @@ function Sidebar({params, onUpdate, isOpen, onToggle, px}){
             note="0.30=moderate · 0.60=severe"/>
         </Sec>
 
-        {/* v6.1: SOFR capital cost */}
-        <Sec title="Capital Cost (SOFR)" accent={T.teal}
+        {/* Capital cost — amber family (è un costo come charter e fuel) */}
+        <Sec title="Capital Cost (SOFR)" accent={T.amberDim}
           sub={`Cost of capital tied up during voyage.\nAt ${params.sofr.toFixed(2)}%: EU voyage ~${fDol(
             (params.capacityM3*LNG_DENSITY*LNG_MMBTU_TON*(params.spaSlope*(hhLive)+params.sTolling+params.sLiquefaction))
             * (params.sofr/100) * (travelDays(NM.EU,params.speedKnots)/365)
           )} per cargo`}>
           <Param label="SOFR RATE" value={params.sofr} min={0.0} max={12.0} step={0.10}
-            onChange={v=>onUpdate("sofr",v)} unit="%" prec={2} color={T.teal}
+            onChange={v=>onUpdate("sofr",v)} unit="%" prec={2} color={T.amberDim}
             note="Update to current SOFR. US fed funds rate proxy."/>
         </Sec>
 
-        {/* v6.1: configurable JKM long-run mean */}
+        {/* OU mean-reversion — purple (model/analytical family) */}
         <Sec title="OU Mean-Reversion Parameters" accent={T.purple}
           sub={`JKM long-run mean was hardcoded at $${(MU_HH*3.8+1.5).toFixed(1)}/M.\n2024-25 compressed to ~$12-14 on oversupply.\nCalibrate to current forward strip.`}>
           <Param label="μ JKM (long-run)" value={params.muJkm} min={6.0} max={30.0} step={0.25}
@@ -1632,7 +1666,7 @@ export default function LNGDashboard(){
     {n:"Acq.(SPA)",v:-(pEu.supply/1e6),       fill:T.redDim},
     {n:"Charter",  v:-(pEu.charter/1e6),       fill:T.amber},
     {n:"Fuel",     v:-(pEu.fuel/1e6),          fill:T.amberDim},
-    {n:"Capital",  v:-(pEu.capitalCost/1e6),   fill:T.purple},
+    {n:"Capital",  v:-(pEu.capitalCost/1e6),   fill:T.amberDim},
     {n:"Regas",    v:-(pEu.regas/1e6),         fill:"#9B6020"},
     {n:"Ports",    v:-(pEu.ports/1e6),         fill:T.textDim},
     {n:"Revenue",  v: pEu.revenue/1e6,         fill:T.cyan},
@@ -1689,7 +1723,7 @@ export default function LNGDashboard(){
               <span style={{fontFamily:FM,fontSize:8,color:T.red,
                 background:`${T.red}18`,border:`1px solid ${T.red}44`,
                 padding:"2px 7px",borderRadius:2,letterSpacing:"0.12em"}}>
-                TRADER EDITION v6.1
+                TRADER EDITION v6.3
               </span>
               {/* v6.0: Regime indicator */}
               <span className={regime==="crisis"?"crs-pulse":""} style={{
@@ -1707,8 +1741,8 @@ export default function LNGDashboard(){
                 </span>
               )}
               {params.blPriceLocked&&(
-                <span style={{fontFamily:FM,fontSize:8,color:T.purple,
-                  background:`${T.purple}20`,border:`1px solid ${T.purple}`,
+                <span style={{fontFamily:FM,fontSize:8,color:T.amber,
+                  background:`${T.amber}20`,border:`1px solid ${T.amber}`,
                   padding:"2px 8px",borderRadius:2}}>
                   🔒 B/L LOCKED
                 </span>
@@ -1718,7 +1752,7 @@ export default function LNGDashboard(){
               Henry Hub (USA) ↔ TTF (Europa) ↔ JKM (Asia-Pacific)
               <span style={{marginLeft:10,color:T.textDim}}>
                 SPA acq: ${pEu.acqPerMmbtu.toFixed(2)}/M · BEP EU: ${pEu.breakEvenDest.toFixed(2)} · BEP AP: ${pAp.breakEvenDest.toFixed(2)}
-                <span style={{marginLeft:6,color:T.teal}}>· v6.0: Student-t jumps + CVaR + charter corr.</span>
+                <span style={{marginLeft:6,color:T.purple}}>· Student-t jumps · CVaR · charter corr.</span>
               </span>
             </div>
           </div>
@@ -1734,7 +1768,7 @@ export default function LNGDashboard(){
                 onClick={()=>setVolMode(v)}>σ {v}</button>
             ))}
             <button className="ctrl" onClick={()=>setSidebarOpen(o=>!o)}
-              style={{color:T.purple,borderColor:T.purple,background:`${T.purple}10`}}>
+              style={{color:T.cyanDim,borderColor:T.cyanDim,background:`${T.cyanDim}10`}}>
               ⚙ PARAMS
             </button>
             <button className="ctrl" onClick={()=>setIsLive(l=>!l)}
@@ -1760,7 +1794,7 @@ export default function LNGDashboard(){
           <Ticker label="TTF"          value={f3(spx.ttf)}    delta={spx.ttf  -(prevPx?.ttf  ??spx.ttf)}   unit="€/MWh"   color={T.cyan}/>
           <Ticker label="TTF (USD)"    value={f3(ttfUsd)}     delta={ttfUsd   -prevTtfUsd}                  unit="$/MMBtu" color={T.cyan}/>
           <Ticker label="JKM"          value={f3(spx.jkm)}    delta={spx.jkm  -(prevPx?.jkm  ??spx.jkm)}   unit="$/MMBtu" color={T.amber}/>
-          <Ticker label="EUR/USD"      value={f3(spx.eurUsd)} delta={spx.eurUsd-(prevPx?.eurUsd??spx.eurUsd)} unit=""      color={T.purple}/>
+          <Ticker label="EUR/USD"      value={f3(spx.eurUsd)} delta={spx.eurUsd-(prevPx?.eurUsd??spx.eurUsd)} unit=""      color={T.cyanDim}/>
           <Ticker label="MARGIN EU"    value={f2(pEu.marginPerMmbtu)} delta={pEu.marginPerMmbtu-(calcProfit(prevPx?.hh??spx.hh,prevTtfUsd,params,"EU").marginPerMmbtu)} unit="$/MMBtu" color={pEu.marginPerMmbtu>0?T.green:T.red}/>
           <Ticker label="MARGIN AP"    value={f2(pAp.marginPerMmbtu)} delta={pAp.marginPerMmbtu-(calcProfit(prevPx?.hh??spx.hh,prevPx?.jkm??spx.jkm,params,"AP").marginPerMmbtu)} unit="$/MMBtu" color={pAp.marginPerMmbtu>0?T.green:T.red}/>
         </div>
@@ -1830,9 +1864,9 @@ export default function LNGDashboard(){
                 <ReferenceLine y={0} stroke="white" strokeDasharray="3 2" strokeOpacity={0.4}
                   label={{value:"BEP",fill:T.textDim,fontSize:7,position:"insideTopRight"}}/>
                 {/* Alert threshold lines */}
-                <ReferenceLine y={params.alertThresholdEU} stroke={T.teal}
+                <ReferenceLine y={params.alertThresholdEU} stroke={T.amber}
                   strokeDasharray="2 3" strokeOpacity={0.5}
-                  label={{value:"ALT",fill:T.teal,fontSize:6,position:"insideRight"}}/>
+                  label={{value:"ALT",fill:T.amber,fontSize:6,position:"insideRight"}}/>
                 <Tooltip content={<Tip pre="$" dec={2}/>}/>
                 <defs>
                   <linearGradient id="gMEU" x1="0" y1="0" x2="0" y2="1">
@@ -1848,29 +1882,28 @@ export default function LNGDashboard(){
             </ResponsiveContainer>
           </Card>
 
-          {/* Monte Carlo v6.0 — Student-t + CVaR + charter corr */}
+          {/* Monte Carlo — Student-t + CVaR + charter corr */}
           <Card accent={T.cyan}>
-            <SH label="Monte Carlo v6.0" right={`700sim · Student-t · CVaR`}/>
+            <SH label="Monte Carlo v6.3" right={`700sim · Student-t · CVaR`}/>
             {mc&&(
               <>
-                <div style={{fontFamily:FM,fontSize:7,color:T.teal,marginBottom:4,
-                  background:`${T.teal}0A`,padding:"3px 6px",borderRadius:2,
-                  borderLeft:`2px solid ${T.teal}`}}>
-                  v6.0: fat-tail jumps · charter corr · regime ×{REGIME[regime].volMult.toFixed(1)}
+                <div style={{fontFamily:FM,fontSize:7,color:T.purpleDim,marginBottom:4,
+                  background:`${T.purple}0A`,padding:"3px 6px",borderRadius:2,
+                  borderLeft:`2px solid ${T.purple}`}}>
+                  Model: fat-tail jumps · charter corr · regime ×{REGIME[regime].volMult.toFixed(1)}
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:3,marginBottom:5}}>
                   {[
-                    {l:"E[M] EU",    v:fMa(mc.eu.mean),           c:pColor(mc.eu.mean)},
-                    {l:"E[M] AP",    v:fMa(mc.ap.mean),           c:pColor(mc.ap.mean)},
-                    {l:"VaR95 EU",   v:fMa(mc.eu.var95),          c:T.red},
-                    {l:"VaR95 AP",   v:fMa(mc.ap.var95),          c:T.redDim},
-                    // v6.0: CVaR display
-                    {l:"CVaR95 EU",  v:fMa(mc.eu.cvar95),         c:"#CC0028"},
-                    {l:"CVaR95 AP",  v:fMa(mc.ap.cvar95),         c:"#AA0020"},
-                    {l:"VaR99 EU",   v:fMa(mc.eu.var99),          c:"#AA0020"},
-                    {l:"VaR99 AP",   v:fMa(mc.ap.var99),          c:"#880020"},
-                    {l:"Sharpe EU",  v:mc.eu.sharpe.toFixed(3),   c:mc.eu.sharpe>0?T.amber:T.red},
-                    {l:"P(profit)",  v:`${mc.eu.probP.toFixed(1)}%`,c:mc.eu.probP>60?T.green:T.red},
+                    {l:"E[M] EU",    v:fMa(mc.eu.mean),              c:pColor(mc.eu.mean)},
+                    {l:"E[M] AP",    v:fMa(mc.ap.mean),              c:pColor(mc.ap.mean)},
+                    {l:"VaR95 EU",   v:fMa(mc.eu.var95),             c:T.red},
+                    {l:"VaR95 AP",   v:fMa(mc.ap.var95),             c:T.red},
+                    {l:"CVaR95 EU",  v:fMa(mc.eu.cvar95),            c:T.redDim},
+                    {l:"CVaR95 AP",  v:fMa(mc.ap.cvar95),            c:T.redDim},
+                    {l:"VaR99 EU",   v:fMa(mc.eu.var99),             c:T.redDim},
+                    {l:"VaR99 AP",   v:fMa(mc.ap.var99),             c:T.redDim},
+                    {l:"Sharpe EU",  v:mc.eu.sharpe.toFixed(3),      c:mc.eu.sharpe>0?T.amber:T.red},
+                    {l:"P(profit)",  v:`${mc.eu.probP.toFixed(1)}%`, c:mc.eu.probP>60?T.green:T.red},
                   ].map((s,i)=>(
                     <div key={i} style={{background:T.bg2,padding:"4px 6px",borderRadius:2}}>
                       <div style={{fontFamily:FC,fontSize:8,color:T.textMid}}>{s.l}</div>
@@ -1878,11 +1911,11 @@ export default function LNGDashboard(){
                     </div>
                   ))}
                 </div>
-                {/* CVaR vs VaR ratio — shows fat-tail severity */}
+                {/* CVaR vs VaR ratio — tail severity indicator */}
                 {mc.eu.var95 < 0 && mc.eu.cvar95 < 0 && (
-                  <div style={{background:`${T.teal}0C`,border:`1px solid ${T.teal}33`,
+                  <div style={{background:`${T.redDim}18`,border:`1px solid ${T.redDim}44`,
                     padding:"3px 7px",borderRadius:2,marginBottom:4,fontFamily:FM,fontSize:7.5}}>
-                    <span style={{color:T.teal}}>CVaR/VaR ratio EU: </span>
+                    <span style={{color:T.redDim}}>CVaR/VaR ratio EU: </span>
                     <span style={{color:T.text,fontWeight:700}}>
                       {(mc.eu.cvar95/mc.eu.var95).toFixed(2)}× </span>
                     <span style={{color:T.textDim}}>(tail severity)</span>
@@ -1915,16 +1948,16 @@ export default function LNGDashboard(){
                     <YAxis tick={{fill:T.textDim,fontSize:6,fontFamily:FM}}/>
                     <Bar dataKey="n" isAnimationActive={false} radius={[1,1,0,0]}>
                       {mc.eu.bins.map((d,i)=>(
-                        <Cell key={i} fill={d.vz===2?"#5A0010":d.vz===1?`${T.red}BB`:d.pos?`${T.cyan}CC`:`${T.redDim}88`}/>
+                        <Cell key={i} fill={d.vz===2?`${T.redDim}AA`:d.vz===1?`${T.red}BB`:d.pos?`${T.cyan}CC`:`${T.redDim}88`}/>
                       ))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
                 <div style={{display:"flex",gap:8,marginTop:3,fontFamily:FM,fontSize:7,color:T.textDim,flexWrap:"wrap"}}>
-                  <span style={{color:"#5A0010"}}>■</span>VaR99
+                  <span style={{color:T.redDim}}>■</span>VaR99
                   <span style={{color:T.red}}>■</span>VaR95
                   <span style={{color:T.cyan}}>■</span>Profit
-                  <span style={{color:T.teal,marginLeft:4}}>CVaR = E[loss | tail]</span>
+                  <span style={{color:T.redDim,marginLeft:4}}>CVaR = E[loss | tail]</span>
                 </div>
               </>
             )}
@@ -2022,7 +2055,7 @@ export default function LNGDashboard(){
             </ResponsiveContainer>
 
             <div style={{marginTop:6,paddingTop:5,borderTop:`1px solid ${T.line}`}}>
-              <div style={{fontFamily:FC,fontSize:9,fontWeight:700,color:T.purple,
+              <div style={{fontFamily:FC,fontSize:9,fontWeight:700,color:T.cyanDim,
                 letterSpacing:"0.15em",marginBottom:3}}>
                 TORNADO — MARGIN SENSITIVITY ±1% (EU)
               </div>
@@ -2225,7 +2258,7 @@ export default function LNGDashboard(){
                     <div style={{display:"flex",gap:8,marginTop:4,paddingTop:3,
                       borderTop:`1px solid ${T.line}`,fontFamily:FM,fontSize:7.5,flexWrap:"wrap"}}>
                       <span style={{color:T.textDim}}>VaR95: <span style={{color:T.red}}>{fMa(item.mcs.var95)}</span></span>
-                      <span style={{color:T.textDim}}>CVaR95: <span style={{color:"#CC0028"}}>{fMa(item.mcs.cvar95)}</span></span>
+                      <span style={{color:T.textDim}}>CVaR95: <span style={{color:T.redDim}}>{fMa(item.mcs.cvar95)}</span></span>
                       <span style={{color:T.textDim}}>BEP: <span style={{color:T.cyan}}>${f2(item.p.breakEvenDest)}</span></span>
                     </div>
                   )}
@@ -2246,15 +2279,15 @@ export default function LNGDashboard(){
                   ))}
                 </div>
               )}
-              {/* v6.0: Kelly position sizing hint */}
+              {/* Kelly position sizing hint */}
               {kellySuggestion !== null && mc && mc.eu.mean > 0 && (
-                <div style={{background:`${T.teal}0A`,border:`1px solid ${T.teal}33`,
-                  borderLeft:`2px solid ${T.teal}`,padding:"5px 9px",borderRadius:2}}>
-                  <div style={{fontFamily:FC,fontSize:8,color:T.teal,letterSpacing:"0.12em",marginBottom:2}}>
+                <div style={{background:`${T.green}0A`,border:`1px solid ${T.green}33`,
+                  borderLeft:`2px solid ${T.green}`,padding:"5px 9px",borderRadius:2}}>
+                  <div style={{fontFamily:FC,fontSize:8,color:T.green,letterSpacing:"0.12em",marginBottom:2}}>
                     HALF-KELLY POSITION SIZE (EU)
                   </div>
                   <div style={{fontFamily:FM,fontSize:10,color:T.text}}>
-                    <span style={{color:T.teal,fontSize:12,fontWeight:700}}>{kellySuggestion}%</span>
+                    <span style={{color:T.green,fontSize:12,fontWeight:700}}>{kellySuggestion}%</span>
                     <span style={{color:T.textDim,fontSize:7,marginLeft:6}}>
                       of capital · based on E[r]/σ² · indicative only
                     </span>
@@ -2285,14 +2318,14 @@ export default function LNGDashboard(){
             SPA: HH×{params.spaSlope}+${params.sTolling}+${params.sLiquefaction}=<span style={{color:T.red}}>${pEu.acqPerMmbtu.toFixed(2)}/MMBtu</span>
             · Heel {params.heelM3}m³ · Sea {SEA_STATE[params.seaState]?.label} ×{SEA_STATE[params.seaState]?.mult}
             · Charter ×{(1+params.ballastFactor).toFixed(2)} (laden+ballast)
-            · OU κ={OU_KAPPA} · Jump λ={params.lambdaJump} · Hawkes +60% · <span style={{color:T.teal}}>Student-t(ν=4) · CVaR · Charter ρ=0.65</span>
-            {params.blPriceLocked&&<span style={{color:T.purple}}> · 🔒 B/L EU:${params.blPriceEU} AP:${params.blPriceAP}</span>}
+            · OU κ={OU_KAPPA} · Jump λ={params.lambdaJump} · Hawkes +60% · <span style={{color:T.purple}}>Student-t(ν=4) · CVaR · Charter ρ=0.65</span>
+            {params.blPriceLocked&&<span style={{color:T.amber}}> · 🔒 B/L EU:${params.blPriceEU} AP:${params.blPriceAP}</span>}
             {params.suezWarActive&&<span style={{color:T.red}}> · WAR RISK ACTIVE</span>}
             {stressMode&&<span style={{color:SS[stressMode].color}}> · ⚡ {SS[stressMode].label}</span>}
           </div>
           <div style={{fontFamily:FM,fontSize:7.5,color:T.textDim}}>
             <span style={{color:fxOk?T.green:T.amber}}>● </span>
-            BCE/Frankfurter · OU+Merton JD · Hawkes · SPA · Dual-Fuel · VaR/CVaR · 2-State Regime · v6.0
+            BCE/Frankfurter · OU+Merton JD · Hawkes · SPA · Dual-Fuel · VaR/CVaR · 2-State Regime · v6.3
           </div>
           <div style={{fontFamily:FM,fontSize:7.5,color:T.textDim}}>
             {new Date().toLocaleString("it-IT")} · #{tick} · <span style={{color:regimeInfo.color}}>{regimeInfo.shortLabel}</span>
