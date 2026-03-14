@@ -1,490 +1,329 @@
-# LNG Trading Dashboard
- 
-> **Real-time P&L calculator and stochastic risk engine for LNG cargo trading.**  
-> Routes: Henry Hub → TTF (Europa / Rotterdam) · Henry Hub → JKM (Asia-Pacific / Tokyo).  
- 
+# LNG Frontier Optimizer
+
+**v7.2 — Full Fundamentals Edition**
+
+A browser-based pre-trade analysis dashboard for LNG cargo economics. Calculates real-time P&L, break-even prices, route optimization (Suez vs Cape), cargo diversion signals, and Monte Carlo risk metrics for Henry Hub → TTF (Europe) and Henry Hub → JKM (Asia-Pacific) voyages.
+
+Built entirely with React and free-tier public APIs. No backend required.
+
 ---
- 
-## Table of Contents
- 
-1. [Overview](#overview)
-2. [Feature Matrix](#feature-matrix)
-3. [Mathematical Models](#mathematical-models)
-4. [Architecture](#architecture)
-5. [Parameter Reference](#parameter-reference)
-6. [Getting Started](#getting-started)
-7. [Known Limitations & Calibration Notes](#known-limitations--calibration-notes)
-8. [Changelog](#changelog)
-9. [Disclaimer](#disclaimer)
- 
----
- 
+
 ## Overview
- 
-The LNG Trading Dashboard is a self-contained single-page application built with React and Recharts. It is designed as a **pre-trade decision support tool** for LNG cargo traders and risk managers, covering the full economics of a single spot voyage from US Gulf Coast liquefaction terminals (Henry Hub-indexed SPA) to either European (TTF) or Asian Pacific (JKM) regasification terminals.
- 
-The application requires **no backend infrastructure**. The only live network call is a lightweight FX rate fetch from the public [Frankfurter / BCE API](https://www.frankfurter.app) (EUR/USD, USD/JPY), with a graceful fallback if the feed is unavailable.
- 
-All price simulation, Monte Carlo sampling, and risk metric computation run entirely in the browser on the main thread, re-evaluated every two seconds via a tick engine.
- 
+
+The tool addresses a specific operational problem: given a US Gulf Coast LNG cargo loaded under an SPA contract, which destination maximizes margin after accounting for all voyage costs — and what is the risk profile of that decision?
+
+It is designed as a **pre-trade scenario planning tool**, not an execution system. Every data point carries an explicit quality label (LIVE / ~PROXY / SIM) so the user always knows the epistemic basis of each number.
+
 ---
- 
-## Feature Matrix
- 
-### Live Market Feeds
- 
-| Feed | Source | Fallback |
+
+## Data Architecture
+
+| Variable | Source | Quality | Latency | Notes |
+|---|---|---|---|---|
+| Henry Hub spot | FRED API `DHHNGSP` | ✅ LIVE | ~1 business day | Federal Reserve St. Louis |
+| Brent crude | FRED API `DCOILBRENTEU` | ✅ LIVE | ~1 business day | Anchor for HFO and JKM proxy |
+| EUR/USD | BCE via Frankfurter | ✅ LIVE | ~60 seconds | Daily ECB fixing |
+| NG Futures M1–M4 | EIA API v2 `RNGC1–4` | ✅ LIVE | Daily | Real NYMEX forward curve |
+| US NG Storage | EIA API v2 | ✅ LIVE | Weekly | Working gas Bcf, HH leading indicator |
+| US LNG Exports | EIA API v2 | ✅ LIVE | Weekly | Weekly volumes, JKM supply signal |
+| EU Gas Storage | GIE AGSI+ | ✅ LIVE | Daily (19:30 CET) | Fill %, injection/withdrawal, TTF leading indicator |
+| EU LNG Terminals | GIE ALSI+ | ✅ LIVE | Daily | Sendout GWh/d, inventory, TTF bearish signal |
+| TTF front-month | Yahoo / ICE TTF=F via Cloudflare Worker | ⚡ PROXY | ~15 min | CORS proxy required |
+| HFO Rotterdam | Brent × 6.80 + 115 | ~ PROXY | Derived | VLSFO formula, R²≈0.89 vs Platts 2019–2025 |
+| JKM | HH + Brent 3-regime regression | ~ PROXY | Derived | R²≈0.71 normal regime, ±10–15% error |
+
+**Data not available for free:** JKM real-time (Platts), charter rates live (Clarksons/Baltic), intraday TTF granularity.
+
+---
+
+## Features
+
+### P&L Engine
+- Full voyage cost model: SPA acquisition, charter (laden + ballast), HFO fuel (cubic speed model), BOG opportunity cost, regas fees, port costs, Suez/war risk surcharges, SOFR capital cost
+- Break-even price calculation per route
+- Dual-fuel BOG model: BOG burns as fuel when sell price < HFO equivalent
+- B/L price lock for hedged positions
+- Dynamic HFO price from Brent (was hardcoded $480/MT in older versions)
+
+### Route Optimization
+- EU (Rotterdam TTF) vs AP (Tokyo JKM) margin comparison
+- Suez Canal vs Cape of Good Hope break-even analysis
+- Cargo diversion signal at configurable voyage progress (default 50%)
+- Sea state multiplier on boil-off rate (Beaufort scale)
+
+### Break-Even Matrix
+- 7×7 sensitivity matrix: HH supply cost (rows) × destination price (cols)
+- **Dynamic range:** automatically adjusts to always show loss zones, regardless of current market spread
+- Hover tooltip with full BEP and acquisition cost breakdown
+
+### Monte Carlo Risk — N=3,000
+- Ornstein-Uhlenbeck price simulation with Markov regime switching (Normal/Crisis)
+- Correlated shocks: HH / TTF / JKM via Cholesky decomposition (ρ matrix calibrated)
+- Merton jump diffusion with Student-t(ν=4) jump sizes (fat tails)
+- Charter rate crisis correlation: ρ≈+0.65 with TTF jump events
+- Seedable PRNG (Mulberry32) for reproducible results
+- VaR95, VaR99, CVaR95, CVaR99, Sharpe ratio, P(profit)
+
+### Fundamental Signals Panel
+- EU gas storage fill % gauge with TTF bullish/bearish signal
+- ALSI+ LNG terminal sendout (high sendout → TTF bearish)
+- US storage surplus vs year-ago (HH bullish/bearish)
+- US LNG export volumes vs 4-week average (JKM supply signal)
+
+### Forward Curve
+- M1–M4: real EIA NYMEX futures (filled dots)
+- M5–M12: OU simulation anchored to real prices (open dots)
+- Contango / Backwardation / Flat classification
+
+### Scenario Tools
+- Stress tests: Black Sea Closure (TTF ×3), US Gulf Hurricane (HH +30%), LNG Glut (HH −25%)
+- Tornado chart: ±1% sensitivity on all major cost drivers
+- Charter rate sensitivity curve
+- Half-Kelly position sizing hint (EU route)
+
+---
+
+## Accuracy Assessment
+
+| Variable | Estimated Error | Impact per Cargo |
 |---|---|---|
-| EUR/USD | Frankfurter/BCE | Last known rate |
-| USD/JPY | Frankfurter/BCE | Last known rate |
-| HH, TTF, JKM | Stochastic simulation (OU + Jump) | — |
- 
-> **Note:** HH, TTF, and JKM prices are **simulated** via calibrated stochastic processes (see [Mathematical Models](#mathematical-models)). The application does not consume live commodity price feeds. Traders must manually calibrate the long-run mean parameters to current market levels.
- 
+| HH spot | ±0% (FRED real) | $0 |
+| TTF | ±2–4% (15min lag) | ~$150k |
+| JKM | ±10–15% (formula) | ±$700k–$1.5M |
+| HFO | ±5–8% (Brent formula) | ~$150k |
+| Charter | ±50–100% (manual input) | **±$1M–$3M** |
+| **Total P&L EU** | **~±5% if charter calibrated** | **~±$500k** |
+| **Total P&L AP** | **~±15%** | **~±$2M** |
+
+**Practical conclusion:** The EU route P&L is operationally reliable if the charter rate is updated to the current Baltic LNG Index level. The AP route should be treated as an indicative range, not a point estimate, due to JKM proxy limitations.
+
 ---
- 
-### P&L Engine (`calcProfit`)
- 
-The core function computes the full economics of a single laden voyage for a given route (`EU` or `AP`):
- 
-| Component | Formula / Notes |
-|---|---|
-| **Cargo loaded** | `(capacityM3 − heelM3) × LNG_density × MMBtu/ton` |
-| **Delivery (MMBtu)** | `loaded × (1 − BOR_effective)^travel_days` — continuous compounding over voyage days |
-| **BOG (Boil-Off Gas)** | `loaded − delivery` |
-| **Acquisition cost** | `HH × SPA_slope + tolling_fee + liquefaction` (per MMBtu) |
-| **Charter cost** | `charterRate × (laden_days + ballast_days)` |
-| **Fuel cost** | `net_HFO_consumed × HFO_price + BOG_opportunity_cost` |
-| **BOG opportunity cost** | `BOG_MMBtu × max(0, sell_price − HFO_equiv_price)` *(Fix v6.1a)* |
-| **Regas fee** | `delivery × regasFee_per_MMBtu` |
-| **Port & canal fees** | Sum of origin port, destination port, canal, war risk |
-| **Capital cost** | `supply_value × (SOFR/100) × (travel_days / 365)` *(Fix v6.1b)* |
-| **Revenue** | `delivery × sell_price` (market or B/L locked) |
-| **Break-even price** | `total_cost / delivery` — minimum destination price for profitability |
-| **Margin/MMBtu** | `sell_price − break_even_price` |
-| **Total margin** | `margin_per_MMBtu × delivery` |
- 
-**Effective BOR** is modulated by route thermal factor and sea state multiplier:  
-`BOR_eff = BOR_nominal × thermal_factor[route] × sea_state_multiplier`
- 
+
+## Tech Stack
+
+- **React 18** — UI framework, single-file component
+- **Recharts** — all charts (LineChart, AreaChart, BarChart, ComposedChart)
+- **Vite** — build tooling (recommended)
+- No backend, no database, no authentication layer
+
 ---
- 
-### Routing Engine
- 
-#### Trade Routes
- 
-| Route ID | Destination | Nautical Miles | Notes |
-|---|---|---|---|
-| `EU` | Rotterdam / TTF | 9,200 nm | Direct Atlantic |
-| `AP_SUEZ` | Tokyo / JKM | 16,100 nm | Via Suez Canal (default) |
-| `AP_CAPE` | Tokyo / JKM | 20,200 nm | Via Cape of Good Hope |
- 
-#### Suez vs. Cape Break-Even
- 
-`calcRouteBreakeven` computes the marginal cost of each routing option and identifies the optimal path. The Cape route eliminates canal fees but adds ~4,100 nm (≈ 9 extra laden days at 19.5 kn), whose extra charter cost must be weighed against Suez fees plus any active war risk surcharge.
- 
-#### Cargo Diversion Engine (`calcCargoDiversion`)
- 
-Models the economics of diverting a cargo already en route to EU toward the AP market at a given voyage progress fraction (default 50%). Accounts for:
-- Remaining cargo at the diversion point (continuous BOR decay applied)
-- Backtrack nautical mile penalty (~15% of distance already covered)
-- Diversion penalty cost (configurable, default $800k)
-- War risk and canal fees on the redirected AP leg
-- JKM threshold: the minimum JKM price at which diversion becomes value-accretive over EU delivery
- 
----
- 
-### Monte Carlo Risk Engine (`runMC`)
- 
-Generates `N = 2,000` correlated scenarios per tick using a fully correlated trivariate stochastic process (HH, TTF, JKM). Each scenario independently produces P&L outcomes for both EU and AP routes. Risk metrics are computed from the resulting empirical distributions.
- 
-#### Correlation Structure
- 
-The three price processes are correlated via a Cholesky decomposition of the correlation matrix `CORR`:
- 
-```
-         HH    TTF   JKM
-HH    [  1.00  0.65  0.55 ]
-TTF   [  0.65  1.00  0.70 ]
-JKM   [  0.55  0.70  1.00 ]
-```
- 
-#### Risk Metrics Produced
- 
-| Metric | Description |
-|---|---|
-| `mean` | Expected margin (E[P]) |
-| `std` | Standard deviation of margin |
-| `var95` | Value at Risk at 95% confidence (5th percentile of P&L distribution) |
-| `var99` | Value at Risk at 99% confidence |
-| `cvar95` | Conditional VaR / Expected Shortfall at 95% — coherent risk measure |
-| `cvar99` | CVaR at 99% |
-| `probP` | Probability of positive P&L (%) |
-| `sharpe` | `E[P] / std(P)` — risk-adjusted return ratio |
-| `p95` | 95th percentile of P&L (upside) |
-| `volRatio` | `std(AP) / std(EU)` — relative volatility of routes |
- 
----
- 
-### Kelly Criterion Position Sizing
- 
-A **Half-Kelly** position size hint is computed from the EU Monte Carlo distribution:
- 
-```
-Kelly_full  = E[r] / σ²
-Half_Kelly  = Kelly_full / 2   (standard risk management convention)
-```
- 
-The result is displayed as a percentage of capital and is **indicative only**. It is suppressed when E[Margin] ≤ 0.
- 
----
- 
-### Break-Even Sensitivity Matrix
- 
-A 7×7 heatmap grid spanning:
-- **HH rows:** ±20% around live HH price  
-- **Destination columns (TTF or JKM):** ±25% around live destination price
- 
-Each cell displays the net margin per MMBtu at that (HH, Destination) price combination, color-coded from deep red (loss > $2/MMBtu) through amber (near break-even) to deep green (profit > $2/MMBtu). The live market cell is highlighted with a framed border.
- 
----
- 
-### Sensitivity / Tornado Analysis (`calcSpider`)
- 
-Computes the ±1% sensitivity of EU total margin to seven key drivers:
- 
-1. HH Gas Price  
-2. TTF Destination Price  
-3. Charter Rate  
-4. SPA Slope  
-5. Boil-Off Rate  
-6. Ballast Factor  
-7. JKM (AP alternative)
- 
-Results are sorted by absolute impact and rendered as a horizontal tornado chart.
- 
----
- 
-### Stress Scenarios
- 
-Three geopolitical / market stress scenarios are available as one-click overlays. Each applies multipliers to the base stochastic parameters:
- 
-| Scenario | Key Impact | Multipliers |
-|---|---|---|
-| **Black Sea Closure** | TTF ×3.0, Russian supply disruption | `mHH:1.10, mTTF:3.00, mJKM:1.50, volMult:3.0` |
-| **US Gulf Hurricane** | Sabine Pass offline, HH +30% | `mHH:1.30, mTTF:1.10, mJKM:1.10, volMult:1.8` |
-| **LNG Glut** | Structural oversupply, prices -18–25% | `mHH:0.75, mTTF:0.82, mJKM:0.80, volMult:0.7` |
- 
-Stress mode alters both the deterministic P&L calculation and the Monte Carlo simulation simultaneously.
- 
----
- 
-### 2-State Markov Regime Model
- 
-The simulation engine operates under a 2-state hidden Markov model (Normal ↔ Crisis) with per-tick transition probabilities:
- 
-| Transition | Probability / tick | Interpretation |
-|---|---|---|
-| Normal → Crisis | 0.008 | ~1 crisis per 208 ticks (≈ 7 min at 2s tick) |
-| Crisis → Normal | 0.12 | ~8-tick crisis duration (≈ 16 seconds) |
- 
-The Crisis regime amplifies volatility, dampens mean-reversion, and increases jump intensity:
- 
-| Parameter | Normal | Crisis |
-|---|---|---|
-| Volatility multiplier | ×1.0 | ×2.8 |
-| Mean-reversion speed (κ) | ×1.0 | ×0.30 |
-| Jump intensity multiplier | ×1.0 | ×2.5 |
- 
-The current regime is always displayed in the dashboard footer.
- 
----
- 
-## Mathematical Models
- 
-### 1. Ornstein-Uhlenbeck (OU) Mean-Reversion
- 
-Each price process follows a discrete-time OU process with mean-reversion speed κ and long-run mean μ:
- 
-```
-dX = κ(μ − X) dt + σ X √dt · ε
-```
- 
-Long-run calibration:
-- HH: μ = $3.52/MMBtu
-- TTF: μ = $29.50/MMBtu (EUR-denominated, converted at live FX)  
-- JKM: configurable via `muJkm` parameter (default $13.50/MMBtu; calibrate to current market)
- 
-### 2. Merton Jump-Diffusion
- 
-Jump events are superimposed on the OU diffusion. Jump arrival follows a Poisson process with intensity λ (configurable). Jump sizes are drawn from a **Student-t distribution with ν = 4 degrees of freedom**, producing fat tails approximately 35% wider than Gaussian (correcting the log-normal assumption used prior to v6.0).
- 
-Jumps are directionally asymmetric:
-- TTF and JKM: predominantly upward jumps (energy crisis realism)
-- HH: lower jump intensity (×0.25 of TTF) and smaller magnitude (σ_jump × 0.5)
- 
-### 3. Hawkes Self-Exciting Process
- 
-A Hawkes process overlay increases the jump arrival rate by +60% conditional on a jump having occurred in the same tick across correlated commodities. This models the empirically observed clustering of jump events in energy markets (e.g., one supply disruption triggering rapid cascading repricing across interconnected hubs).
- 
-### 4. Charter Rate Stochastic Correlation
- 
-The charter rate in each Monte Carlo path is shocked by a crisis multiplier:
- 
-```
-charterCrisisShock = 1 + 0.65 × |Student-t(ν=6)|    if nTTF > 0
-charterCrisisShock = 1                                 otherwise
-```
- 
-This models the empirical positive correlation (ρ ≈ 0.65) between LNG spot shipping rates and gas price volatility spikes, a significant source of P&L risk that is absent from models assuming deterministic charter rates.
- 
-### 5. CVaR (Expected Shortfall)
- 
-CVaR is computed as the arithmetic mean of all simulated P&L outcomes falling below the VaR threshold:
- 
-```
-CVaR_α = E[P&L | P&L < VaR_α]
-```
- 
-CVaR is a coherent risk measure (satisfies sub-additivity) and is more appropriate than VaR alone for fat-tailed distributions.
- 
----
- 
-## Architecture
- 
-```
-App.jsx  (single-file SPA)
-│
-├── DESIGN TOKENS (T)            — Semantic color system + typography
-├── PHYSICAL CONSTANTS           — LNG density, HFO price, fuel consumption
-├── ROUTE DEFINITIONS            — NM distances, thermal factors
-├── SEA STATE CONFIG             — BOR multipliers per Beaufort scale
-├── STRESS SCENARIOS (SS)        — Black Sea, Hurricane, Glut
-├── REGIME MODEL                 — 2-state Markov parameters
-├── DEFAULT PARAMETERS (DP)      — All configurable defaults
-│
-├── resolveRoute()               — Route metadata resolver (EU / AP_SUEZ / AP_CAPE)
-├── calcProfit()                 — Core P&L engine (v6.1)
-├── calcRouteBreakeven()         — Suez vs. Cape optimizer
-├── calcCargoDiversion()         — In-voyage diversion economics
-├── getMU() / choleskyL()        — OU calibration + Cholesky decomposition
-├── randn() / studentT()         — Normal / Student-t samplers (Box-Müller)
-├── poissonSample()              — Poisson jump count sampler
-├── calcCVaR()                   — Expected Shortfall computation
-├── runMC()                      — Full Monte Carlo engine (N=2,000 paths)
-├── calcSpider()                 — Tornado sensitivity analysis
-├── calcBreakEvenMatrix()        — 7×7 sensitivity heatmap engine
-├── fetchFX()                    — Frankfurter/BCE EUR/USD, USD/JPY feed
-│
-├── UI ATOMS
-│   ├── Tip                      — Recharts custom tooltip
-│   ├── SH                       — Section header
-│   ├── Card                     — Panel container with accent border
-│   ├── Badge                    — Status label chip
-│   └── Ticker                   — Animated live price display
-│
-├── PANELS (React components)
-│   ├── BreakEvenMatrixPanel     — 7×7 margin heatmap with hover info
-│   ├── PnlDetailPanel           — Full cost waterfall breakdown
-│   ├── StressPanel              — One-click stress scenario selector
-│   └── Sidebar                  — Collapsible scenario parameter editor
-│
-└── App()                        — Root component
-    ├── State: params, prices, MC results, regime, stress mode
-    ├── Effect: FX feed polling (60s interval)
-    ├── Effect: Tick engine (2s interval) — OU + Jump simulation
-    └── Layout: Header → Row A (tickers) → Row B (P&L + charts)
-                       → Row C (optimal route) → Row D (matrices) → Footer
-```
- 
----
- 
-## Parameter Reference
- 
-All parameters are configurable via the **Scenario Editor** sidebar (▶ toggle). Default values reflect a typical US Gulf Coast → global spot cargo.
- 
-### SPA Contract
- 
-| Parameter | Default | Range | Description |
-|---|---|---|---|
-| `spaSlope` | 1.115 | 1.00 – 1.30 | HH multiplier in SPA formula. Typical range: 110–115% of HH |
-| `sTolling` | $2.50 | $1.00 – $5.00 | Tolling fee per MMBtu (Sabine Pass / Freeport) |
-| `sLiquefaction` | $0.30 | $0.05 – $1.00 | Loading & liquefaction overhead per MMBtu |
- 
-### Vessel
- 
-| Parameter | Default | Range | Description |
-|---|---|---|---|
-| `capacityM3` | 174,000 m³ | 140k – 210k | Cargo tank capacity (Q-Flex: 174k, Q-Max: 210k) |
-| `heelM3` | 1,500 m³ | 500 – 4,000 | Non-tradeable cooldown volume |
-| `borRate` | 0.15%/day | 0.05% – 0.30% | Boil-off rate at calm sea (shipyard nominal spec) |
-| `speedKnots` | 19.5 kn | 14 – 22 | Laden voyage speed |
-| `seaState` | CALM | CALM / MODERATE / ROUGH / STORM | BOR multiplier: ×1.00 / ×1.20 / ×1.50 / ×1.80 |
- 
-### Charter
- 
-| Parameter | Default | Range | Description |
-|---|---|---|---|
-| `charterRate` | $85,000/day | $40k – $500k | Time charter equivalent rate |
-| `ballastFactor` | 0.85 | 0.50 – 1.20 | Ballast voyage duration as fraction of laden voyage |
- 
-### Routing & Risk
- 
-| Parameter | Default | Description |
-|---|---|---|
-| `useCape` | false | Route AP cargo via Cape of Good Hope instead of Suez |
-| `suezWarActive` | false | Apply war risk surcharge to Suez transits |
-| `canalAP` | $500,000 | Suez Canal transit fee |
-| `warRiskSuez` | $300,000 | War risk surcharge (active when `suezWarActive = true`) |
-| `diversionPenalty` | $800,000 | Fixed cost applied to any cargo diversion event |
- 
-### Terminal Fees
- 
-| Parameter | Default | Description |
-|---|---|---|
-| `portOrigin` | $280,000 | US Gulf origin port fees |
-| `portDest` | $380,000 | Destination port fees |
-| `regasFeeEU` | $0.28/MMBtu | EU regasification terminal fee |
-| `regasFeeAP` | $0.35/MMBtu | AP regasification terminal fee |
- 
-### Stochastic / Risk
- 
-| Parameter | Default | Description |
-|---|---|---|
-| `lambdaJump` | 0.5 | Poisson jump arrival intensity (per year) |
-| `sigmaJump` | 0.30 | Jump size scale parameter (Student-t standard deviation) |
-| `muJkm` | $13.50 | JKM long-run mean for OU simulation — **calibrate to current market** |
-| `sofr` | 5.30% | SOFR proxy for capital cost computation — update manually |
-| `alertThresholdEU` | $0.30 | Amber alert margin threshold for EU route |
-| `alertThresholdAP` | $0.30 | Amber alert margin threshold for AP route |
- 
-### B/L Price Lock
- 
-When enabled, fixes the sell price at the Bill of Lading value, overriding the simulated market price for both deterministic P&L and Monte Carlo paths. Useful for modeling fixed-price long-term supply agreements.
- 
----
- 
-## Getting Started
- 
+
+## Setup
+
 ### Prerequisites
- 
-- Node.js ≥ 18  
-- A React project scaffolded with [Vite](https://vitejs.dev/) (recommended) or Create React App
- 
-### Dependencies
- 
-```json
-"dependencies": {
-  "react": "^18",
-  "react-dom": "^18",
-  "recharts": "^2"
-}
-```
- 
+- Node.js ≥ 18
+- A Vite + React project scaffold
+
 ### Installation
- 
+
 ```bash
-# 1. Scaffold a new Vite + React project (skip if adding to existing project)
-npm create vite@latest lng-dashboard -- --template react
-cd lng-dashboard
- 
-# 2. Install dependencies
-npm install recharts
- 
-# 3. Replace src/App.jsx with the provided App.jsx
- 
-# 4. Start the development server
+git clone https://github.com/YOUR_USERNAME/lng-frontier-optimizer
+cd lng-frontier-optimizer
+npm install
+```
+
+Replace the generated `src/App.jsx` with the project `App.jsx`, then:
+
+```bash
 npm run dev
 ```
- 
-The application will be available at `http://localhost:5173` by default.
- 
-### Build for Production
- 
-```bash
-npm run build
-# Output: dist/ — a fully static bundle with no server requirements
+
+### API Keys
+
+The application requires three free API keys. Replace the values in the `API` constant at the top of `App.jsx`:
+
+```javascript
+const API = {
+  FRED: "YOUR_FRED_KEY",   // register at fred.stlouisfed.org/docs/api/api_key.html
+  EIA:  "YOUR_EIA_KEY",    // register at eia.gov/opendata/
+  GIE:  "YOUR_GIE_KEY",    // register at agsi.gie.eu/account (select AGSI + ALSI)
+};
 ```
- 
-The production build is a single HTML + JS bundle deployable to any static hosting provider (GitHub Pages, Netlify, Vercel, S3, etc.).
- 
-### Fonts (Optional, Recommended)
- 
-The dashboard uses JetBrains Mono for monospaced data values and Barlow Condensed for labels. To load them from Google Fonts, add the following to `index.html`:
- 
-```html
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+All three keys are free and require only email registration. No credit card required.
+
+### TTF Proxy (Cloudflare Worker)
+
+Yahoo Finance does not allow direct browser fetch due to CORS. A Cloudflare Worker proxy is required for live TTF data. Without it, TTF falls back to OU simulation.
+
+1. Create a free account at [cloudflare.com](https://cloudflare.com) (no credit card required, 100k requests/day free)
+2. Go to **Workers & Pages → Create application → Create Worker**
+3. Replace the default code with:
+
+```javascript
+export default {
+  async fetch(request) {
+    const url =
+      "https://query1.finance.yahoo.com/v8/finance/chart/TTF=F" +
+      "?interval=1d&range=5d";
+    try {
+      const resp = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+          "Accept": "application/json",
+        },
+      });
+      const data = await resp.json();
+      return new Response(JSON.stringify(data), {
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "max-age=900",
+        },
+      });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: e.message }), {
+        status: 502,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
+    }
+  },
+};
 ```
- 
-Both fonts have system fallbacks (`Arial Narrow` and `Courier New`) and the application renders correctly without them.
- 
+
+4. Click **Save and Deploy**
+5. Copy your Worker URL (e.g. `https://ttf-proxy.yourname.workers.dev/`) and replace the endpoint in `fetchTTFProxy()` inside `App.jsx`
+
 ---
- 
-## Known Limitations & Calibration Notes
- 
-### Price Feeds
- 
-The HH, TTF, and JKM prices displayed are **generated by the stochastic model**, not sourced from live market data. The simulation is calibrated to reasonable long-run mean values but will drift from realized market prices. Traders should:
- 
-1. Treat the price tickers as scenario generators, not live quotes.
-2. Calibrate `muJkm` to the current JKM forward curve center (default $13.50 reflects 2024–25 oversupply; adjust for prevailing conditions).
-3. Calibrate `sofr` to the current Fed Funds / SOFR rate (default 5.30%).
- 
-### Monte Carlo Sample Size
- 
-With `N = 2,000` paths, CVaR99 estimates (bottom 20 paths) carry non-trivial sampling error. For production risk management, increase `N` to 10,000–50,000. Note that computation occurs synchronously on the main thread; at high `N`, consider moving the MC engine to a Web Worker to avoid UI freezing.
- 
-### Regime Model Calibration
- 
-The 2-state Markov transition probabilities (`pNormal→Crisis = 0.008`, `pCrisis→Normal = 0.12`) are indicative. These imply a crisis frequency of roughly one event per 7 minutes at the 2-second tick rate. For backtesting or longer time horizons, these parameters should be estimated from historical volatility regime data.
- 
-### Single-Cargo Scope
- 
-The model prices a **single spot cargo**. It does not model:
-- Portfolio effects across multiple simultaneous cargoes
-- Long-term SPA contract optionality
-- Storage optionality at regasification terminals
-- Freight forward curve (FFA) hedging instruments
- 
-### FX Risk
- 
-TTF prices are converted from EUR to USD at the live BCE rate. JKM is assumed USD-denominated. The model does not hedge FX risk; traders with EUR-denominated cost bases should apply appropriate FX adjustments.
- 
+
+## Configuration
+
+All physical constants and model parameters are centralized in the `CFG` object at the top of `App.jsx`. No rebuild is required if you edit these directly in the UI sidebar (Scenario Editor panel, toggle with the ▶ button).
+
+Key parameters to calibrate before use:
+
+| Parameter | Default | Notes |
+|---|---|---|
+| Charter Rate | $85,000/day | **Update daily from Baltic LNG Index** |
+| SOFR Rate | 5.30% | US fed funds rate proxy, update quarterly |
+| HFO Crack Spread | $115/MT | VLSFO Rotterdam premium over Brent |
+| Suez Canal Fee | $500,000 | SCZONE published rates, update monthly |
+| SPA Slope | 1.115 | Your actual contract HH multiplier |
+| Tolling Fee | $2.50/MMBtu | Your actual tolling agreement |
+
 ---
- 
-## Changelog
- 
-### v6.1 — Current Release
- 
-- **FIX v6.1a — BOG Opportunity Cost:** Corrected the dual-fuel opportunity cost formula. Previous versions compared acquisition cost (HH × slope, always < $11.85/MMBtu HFO threshold) instead of the sell price, causing perpetually zero opportunity cost. The correct formula applies `max(0, sell_price − HFO_equiv_price)` per MMBtu of BOG consumed as fuel.
-- **FIX v6.1b — Capital Cost:** Introduced explicit cost of capital: `supply_value × (SOFR/100) × (travel_days / 365)`. At SOFR = 5.3% on a $120M supply value over 19 days, this amounts to ~$330k — previously invisible, causing systematically low break-even prices.
-- **Configurable JKM Long-Run Mean (`muJkm`):** The JKM OU mean-reversion target was previously hardcoded as `HH × 3.8 + 1.5`, which became stale during the 2024–25 JKM compression cycle. Now a direct trader-configurable parameter.
-- **Break-Even Matrix expanded to ±25% (Dest) / ±20% (HH):** Broadened from ±15% / ±15% (v6.0) following trader feedback on the need for wider scenario coverage.
- 
-### v6.0
- 
-- 2-State Markov Regime Model (Normal ↔ Crisis)
-- Student-t(ν=4) jump size distribution (fat tails, replaces log-normal)
-- CVaR / Expected Shortfall as coherent risk measure
-- Hawkes self-exciting process overlay
-- Charter rate — volatility crisis correlation (ρ = 0.65)
-- Half-Kelly position sizing hint
-- Break-Even Sensitivity Matrix (7×7 heatmap)
-- Alert threshold system (amber ring on low-but-positive margin)
-- Semantic color system v6.0
-- Cargo Diversion Engine fixes (actual remaining nautical miles replacing heuristic)
-- Break-Even Matrix Panel v6.1 rendering fixes (removed `position:absolute` inside `<td>`, eliminated `rgb()` interpolation NaN vectors, added matrix row guard)
- 
+
+## Physical Model
+
+### Boil-Off Rate
+```
+BOR_effective = BOR_nominal × thermal_factor × sea_state_multiplier
+BOG = load_MMBtu × (1 - (1 - BOR_eff)^travel_days)
+Delivered = Load - BOG
+```
+Sea state multipliers: Calm ×1.00 / Moderate ×1.20 / Rough ×1.50 / Storm ×1.80
+
+### Fuel Consumption (cubic speed model)
+```
+fuel_MT/day = FUEL_COEFF × speed_knots³
+```
+Calibrated so that 19.5 knots yields ~97 MT/day laden (Q-Flex 174k m³ spec).
+BOG displaces HFO: net HFO = max(0, fuel_required − BOG_HFO_equivalent)
+
+### BOG Opportunity Cost
+```
+BOG_opp_cost = BOG_MMBtu × max(0, sell_price − HFO_per_MMBtu)
+```
+When sell price < HFO equivalent ($15.10/MMBtu at current HFO $611/MT), BOG opportunity cost is zero — burning BOG is economically free relative to HFO.
+
+### JKM Proxy (3-regime regression)
+```
+Glut   (HH<2.8, Brent<72):  JKM = 1.30×HH + 0.060×Brent + 1.5
+Normal (default):            JKM = 1.55×HH + 0.070×Brent + 2.0
+Crisis (Brent>92 or HH>5):  JKM = 2.00×HH + 0.140×Brent + 3.5
+```
+Recalibrated on 2023–2025 data to reflect LNG structural oversupply. R²≈0.71 in normal regime. Error: ±10–15%.
+
+### HFO Price Proxy
+```
+HFO_VLSFO ($/MT) = Brent ($/bbl) × 6.80 + 115
+```
+Historical calibration: Rotterdam VLSFO 2019–2025, R²≈0.89.
+
 ---
- 
-## Disclaimer
- 
-This application is provided for **informational and educational purposes only**. It does not constitute financial advice, trading recommendations, or an offer to buy or sell any commodity or financial instrument. All price simulations are stochastic models that do not predict future market prices.
- 
-LNG trading involves substantial financial risk. Users are solely responsible for all trading decisions. The authors of this software accept no liability for any financial loss incurred through its use.
- 
+
+## Monte Carlo Model
+
+The simulation uses an Ornstein-Uhlenbeck process with Merton jump diffusion:
+
+```
+dS = κ(μ−S)dt + σS·dW + J·dN(λ)
+```
+
+Where:
+- **κ = 0.18** — mean-reversion speed (anchored to real prices, not hardcoded)
+- **σ** — regime-adjusted volatility (×2.8 in Crisis regime)
+- **J** — jump size drawn from Student-t(ν=4) — fat tails vs Gaussian
+- **λ** — jump intensity (default 0.5/year, configurable)
+- **dN** — Poisson process; Hawkes-like: P(JKM jump | TTF jump) += 60%
+
+Price correlations: HH/TTF ρ=0.65, HH/JKM ρ=0.55, TTF/JKM ρ=0.70 (Cholesky decomposed).
+
+Charter crisis correlation: ρ≈+0.65 with TTF jump events (Baltic LNG Index historically spikes with supply disruptions).
+
+PRNG: Mulberry32 (seedable, reproducible per session).
+
 ---
- 
-*LNG Trading Dashboard — v6.1 Trader Edition*
- 
+
+## Data Quality Transparency
+
+Every market variable in the UI carries a badge indicating its epistemic status:
+
+| Badge | Meaning |
+|---|---|
+| `● LIVE` | Real data from authoritative API, fetched this session |
+| `~ PROXY` | Derived from real data via formula or non-official source |
+| `⟳ SIM` | Ornstein-Uhlenbeck simulation (API unavailable or not yet fetched) |
+
+The Data Sources banner at the top of the dashboard lists the current status of all 11 data feeds simultaneously.
+
+---
+
+## Limitations
+
+The following limitations are inherent to the free-data constraint and should be understood before operational use:
+
+1. **JKM is a proxy, not a price.** Platts JKM is proprietary. The regression formula carries ±10–15% error. AP route margins should be interpreted as a range, not a point estimate.
+
+2. **Charter rate is manual input.** The default $85,000/day may differ significantly from the current Baltic LNG Index. Update this parameter daily for operationally meaningful results.
+
+3. **TTF has ~15 minute delay.** The Cloudflare Worker caches Yahoo Finance data for 15 minutes (max-age=900). Not suitable for real-time hedging decisions.
+
+4. **FRED data is T+1.** Henry Hub and Brent spot prices reflect the previous business day's settlement. The OU simulation evolves intraday from that anchor.
+
+5. **No position management.** The tool evaluates a single hypothetical cargo. It does not track portfolios, hedges, or aggregate exposure.
+
+6. **Monte Carlo is synchronous (N=3,000).** Results are statistically valid for VaR95 (150 tail observations) but VaR99 has ~30 tail observations — adequate for directional guidance, not regulatory reporting.
+
+---
+
+## Roadmap
+
+The following improvements are identified but require either paid data access or significant architectural changes:
+
+- **Web Worker for Monte Carlo** — moves N=5,000 simulation off the UI thread, eliminates ~120ms blocking per recalculation
+- **Cloudflare KV cache** — persist FRED/EIA data across sessions, eliminate re-fetch on page reload
+- **Baltic LNG Index integration** — charter rate from live source (currently no free API exists)
+- **Platts JKM** — eliminates the largest remaining accuracy gap (paid subscription required)
+- **AGSI+ historical chart** — 90-day storage fill trend for seasonal context
+
+---
+
+## License
+
+MIT License. Free for personal and commercial use.
+
+If you use this tool in a professional context, please note the data limitations described above and verify all figures against authoritative market sources before making trading decisions.
+
+---
+
+## Acknowledgements
+
+- [FRED / Federal Reserve Bank of St. Louis](https://fred.stlouisfed.org) — Henry Hub and Brent data
+- [U.S. Energy Information Administration](https://www.eia.gov/opendata/) — NG storage, futures, LNG exports
+- [Gas Infrastructure Europe](https://agsi.gie.eu) — AGSI+ and ALSI+ European storage and LNG terminal data
+- [Frankfurter / European Central Bank](https://www.frankfurter.app) — EUR/USD exchange rate
+- [Cloudflare Workers](https://workers.cloudflare.com) — TTF CORS proxy (free tier)
