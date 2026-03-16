@@ -7,9 +7,9 @@ import {
 
 /* ── API KEYS ────────────────────────────────────────────────────────── */
 const API = {
-  FRED: "REMOVED_FRED_KEY",
-  EIA:  "REMOVED_EIA_KEY",
-  GIE:  "REMOVED_GIE_KEY",
+  FRED: "personal key",
+  EIA:  "personal key",
+  GIE:  "personal key",
 };
 
 /* ── DESIGN TOKENS ───────────────────────────────────────────────────── */
