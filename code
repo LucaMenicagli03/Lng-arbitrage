@@ -265,7 +265,7 @@ async function fetchBCE() {
 }
 
 /** TTF front-month (ICE TTF=F) — via Cloudflare Worker CORS proxy.
- *  Proxy: https://ttf-proxy.lucamenicagli03.workers.dev/
+ *  Proxy: personal proxy
  *  Sorgente: Yahoo Finance / ICE TTF=F (~15min delay, €/MWh)
  *  CF cache: max-age=900 — nessun rate limit, CORS risolto definitivamente
  *  DQ: PROXY — dato reale ma tramite intermediario non ufficiale
@@ -273,7 +273,7 @@ async function fetchBCE() {
 async function fetchTTFProxy() {
   try {
     const r = await fetch(
-      "https://ttf-proxy.lucamenicagli03.workers.dev/",
+      "personal proxy",
       {signal:AbortSignal.timeout(9000)}
     );
     if(!r.ok) throw new Error(`CF Worker HTTP ${r.status}`);
