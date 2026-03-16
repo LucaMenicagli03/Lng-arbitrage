@@ -7,9 +7,9 @@ import {
 
 /* ── API KEYS ────────────────────────────────────────────────────────── */
 const API = {
-  FRED: "8468cae41b619bb0aca24b645bab7203",
-  EIA:  "sy261h25hBOdbgjXvDxQKfgl7W7kpcPPu3vdRO0F",
-  GIE:  "dc021a9e83a2f118a2ebf8e404b92329",
+  FRED: "personal key",
+  EIA:  "personal key",
+  GIE:  "personal key",
 };
 
 /* ── DESIGN TOKENS ───────────────────────────────────────────────────── */
